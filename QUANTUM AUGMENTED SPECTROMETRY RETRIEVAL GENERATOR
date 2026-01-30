@@ -1,0 +1,652 @@
+#!/usr/bin/env python3
+"""
+QUANTUM AUGMENTED SPECTROMETRY RETRIEVAL GENERATOR
+===================================================
+A quantum-enhanced model that uses color-based vectors to direct code flow
+for increased memory efficiency and processing speed.
+
+Color Vector Mapping:
+- R (0-255): Processing Intensity (Energy Level)
+- G (0-255): Memory Allocation Priority
+- B (0-255): Retrieval Mode (Exact ↔ Fuzzy)
+- IR (0-255): Long-range Pattern Matching Weight
+- UV (0-255): Short-range Exact Matching Weight
+
+Author: Titan Quantum Brain System
+"""
+
+import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, List, Tuple, Optional
+from collections import OrderedDict
+
+# --- QUANTUM IMPORTS ---
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit_machine_learning.connectors import TorchConnector
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+
+# --- CONFIGURATION ---
+SPECTRAL_DIM = 8          # Extended spectral dimension (R, G, B, IR, UV, NormX, NormY, NormZ)
+MEMORY_BANKS = 16         # Number of memory banks
+QUBITS_SPEC = 4           # Quantum circuit qubits for spectral routing
+
+
+class ColorVectorRouter(nn.Module):
+    """
+    ROUTES CODE FLOW BASED ON SPECTRAL PROPERTIES
+    
+    Uses color values to determine:
+    - Which processing path to take
+    - How much memory to allocate
+    - What retrieval mode to use
+    """
+    
+    def __init__(self, num_paths: int = 8):
+        super().__init__()
+        
+        self.num_paths = num_paths
+        
+        # Define routing thresholds based on color intensity
+        # Red channel: Processing intensity
+        self.red_threshold = nn.Parameter(torch.tensor(128.0))
+        
+        # Green channel: Memory priority
+        self.green_threshold = nn.Parameter(torch.tensor(128.0))
+        
+        # Blue channel: Retrieval mode (0=exact, 1=fuzzy)
+        self.blue_threshold = nn.Parameter(torch.tensor(128.0))
+        
+        # IR/UV channels for pattern matching mode
+        self.ir_threshold = nn.Parameter(torch.tensor(128.0))
+        self.uv_threshold = nn.Parameter(torch.tensor(128.0))
+        
+        # Quantum circuit for routing decision
+        self._build_quantum_router()
+        
+        # Classical adapter for path selection
+        self.path_selector = nn.Sequential(
+            nn.Linear(1, num_paths),
+            nn.Softmax(dim=-1)
+        )
+        
+    def _build_quantum_router(self):
+        """Build quantum circuit for spectral routing"""
+        qc = QuantumCircuit(QUBITS_SPEC)
+        self.q_inputs = [Parameter(f'q_x{i}') for i in range(QUBITS_SPEC)]
+        self.q_weights = [Parameter(f'q_w{i}') for i in range(QUBITS_SPEC)]
+        
+        # Encode spectral components
+        for i in range(QUBITS_SPEC):
+            qc.rx(self.q_inputs[i], i)
+            
+        # Entangle routing qubits
+        for i in range(QUBITS_SPEC - 1):
+            qc.cx(i, i + 1)
+        qc.cx(QUBITS_SPEC - 1, 0)
+        
+        # Variational layer for learned routing
+        for i in range(QUBITS_SPEC):
+            qc.ry(self.q_weights[i], i)
+            
+        # Create QNN
+        qnn = EstimatorQNN(
+            circuit=qc,
+            input_params=self.q_inputs,
+            weight_params=self.q_weights
+        )
+        
+        self.q_router = TorchConnector(qnn)
+        
+    def extract_color_features(self, spectral_vec: torch.Tensor) -> Dict[str, torch.Tensor]:
+        """
+        Extract routing features from color vector
+        
+        Input shape: [batch, SPECTRAL_DIM] where:
+        - [:, 0] = Red (0-255) -> Processing intensity
+        - [:, 1] = Green (0-255) -> Memory priority
+        - [:, 2] = Blue (0-255) -> Retrieval mode
+        - [:, 3] = IR (0-255) -> Pattern matching
+        - [:, 4] = UV (0-255) -> Exact matching
+        - [:, 5:8] = Surface normals
+        """
+        # Normalize to 0-1 range
+        normalized = spectral_vec / 255.0
+        
+        return {
+            'processing_intensity': normalized[:, 0],      # Red
+            'memory_priority': normalized[:, 1],           # Green
+            'retrieval_mode': normalized[:, 2],            # Blue
+            'pattern_match_weight': normalized[:, 3],      # IR
+            'exact_match_weight': normalized[:, 4],        # UV
+            'normals': normalized[:, 5:8]                  # Surface normals
+        }
+        
+    def get_routing_decision(self, spectral_vec: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+        """
+        Determine processing path based on color vector
+        
+        Returns:
+            path_weights: Tensor of shape [batch, num_paths] - which paths to use
+            routing_info: Dict with routing metadata
+        """
+        features = self.extract_color_features(spectral_vec)
+        
+        # Compress for quantum processing
+        x_compressed = spectral_vec.mean(dim=1, keepdim=True).repeat(1, QUBITS_SPEC)
+        
+        # Quantum routing
+        q_decision = self.q_router(x_compressed)
+        
+        # Handle quantum output shape: EstimatorQNN may return various shapes:
+        # (batch, 1), (batch, n_qubits), (batch, 2^n_qubits), or (batch, n, m)
+        # We need to reduce to (batch, 1) for the path_selector (nn.Linear(1, num_paths))
+        
+        # Step 1: Flatten all dimensions except batch to handle multi-dimensional outputs
+        q_decision_flat = q_decision.reshape(q_decision.shape[0], -1)  # [batch, N]
+        
+        # Step 2: Reduce to single scalar per batch element using mean
+        q_decision_scalar = q_decision_flat.mean(dim=-1, keepdim=True)  # [batch, 1]
+        
+        # Step 3: Ensure we have exactly (batch, 1) shape for path_selector
+        if q_decision_scalar.shape[-1] != 1:
+            q_decision_scalar = q_decision_scalar.mean(dim=-1, keepdim=True)
+        
+        # Classical path selection
+        path_weights = self.path_selector(q_decision_scalar)
+        
+        # Determine routing info based on thresholds
+        routing_info = {
+            'processing_intensity': features['processing_intensity'].mean().item(),
+            'memory_priority': features['memory_priority'].mean().item(),
+            'retrieval_mode': 'fuzzy' if features['retrieval_mode'].mean() > 0.5 else 'exact',
+            'pattern_match_enabled': features['pattern_match_weight'].mean() > 0.5,
+            'exact_match_enabled': features['exact_match_weight'].mean() > 0.5,
+            'quantum_routing_value': q_decision.mean().item()
+        }
+        
+        return path_weights, routing_info
+        
+    def forward(self, spectral_vec: torch.Tensor) -> Tuple[torch.Tensor, Dict]:
+        return self.get_routing_decision(spectral_vec)
+
+
+class SpectrumMemoryBank(nn.Module):
+    """
+    MEMORY SYSTEM INDEXED BY SPECTRAL SIGNATURES
+    
+    Each memory bank is optimized for specific spectral patterns:
+    - Bank 0-3: High-intensity processing (Red-heavy)
+    - Bank 4-7: High-priority memory (Green-heavy)
+    - Bank 8-11: Fuzzy retrieval (Blue-heavy)
+    - Bank 12-15: Pattern matching (IR/UV-heavy)
+    """
+    
+    def __init__(self, memory_dim: int = 256, num_banks: int = 16):
+        super().__init__()
+        
+        self.memory_dim = memory_dim
+        self.num_banks = num_banks
+        
+        # Create memory banks
+        self.banks = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(memory_dim, memory_dim),
+                nn.LayerNorm(memory_dim),
+                nn.Tanh()
+            )
+            for _ in range(num_banks)
+        ])
+        
+        # Bank attention weights
+        self.bank_attention = nn.Sequential(
+            nn.Linear(SPECTRAL_DIM, num_banks),
+            nn.Softmax(dim=-1)
+        )
+        
+        # Memory read/write heads
+        self.write_head = nn.Linear(SPECTRAL_DIM + memory_dim, memory_dim)
+        self.read_head = nn.Linear(memory_dim, memory_dim)
+        
+    def get_bank_for_spectrum(self, spectral_vec: torch.Tensor) -> torch.Tensor:
+        """
+        Determine which memory banks to use based on spectral input
+        
+        Returns bank weights of shape [batch, num_banks]
+        """
+        return self.bank_attention(spectral_vec)
+    
+    def read(self, spectral_vec: torch.Tensor, query: torch.Tensor) -> torch.Tensor:
+        """
+        Read from memory banks based on spectral routing
+        
+        Args:
+            spectral_vec: [batch, SPECTRAL_DIM] color vector
+            query: [batch, query_dim] read query
+            
+        Returns:
+            Read memory content [batch, memory_dim]
+        """
+        bank_weights = self.get_bank_for_spectrum(spectral_vec)
+        
+        # Collect memories from weighted banks
+        batch_size = query.shape[0]
+        memories = []
+        
+        for b in range(self.num_banks):
+            # Adapt query to memory_dim if needed
+            if query.shape[-1] != self.memory_dim:
+                # Project query to memory_dim
+                adapted_query = self._adapt_query(query)
+            else:
+                adapted_query = query
+            bank_mem = self.banks[b](adapted_query)
+            memories.append(bank_mem)
+        
+        # Stack and apply bank weights
+        all_memories = torch.stack(memories, dim=1)  # [batch, num_banks, memory_dim]
+        weighted_memories = all_memories * bank_weights.unsqueeze(-1)
+        combined_memory = weighted_memories.sum(dim=1)  # [batch, memory_dim]
+        
+        # Read head processing
+        read_output = self.read_head(combined_memory)
+        
+        return read_output
+    
+    def _adapt_query(self, query: torch.Tensor) -> torch.Tensor:
+        """Adapt query to memory dimension"""
+        if not hasattr(self, '_query_adapter'):
+            self._query_adapter = nn.Linear(query.shape[-1], self.memory_dim)
+        return self._query_adapter(query)
+        
+    def write(self, spectral_vec: torch.Tensor, new_memory: torch.Tensor) -> None:
+        """
+        Write to memory banks based on spectral routing
+        
+        Args:
+            spectral_vec: [batch, SPECTRAL_DIM] color vector
+            new_memory: [batch, memory_dim] memory to write
+        """
+        bank_weights = self.get_bank_for_spectrum(spectral_vec)
+        
+        for b in range(self.num_banks):
+            # Write to each bank proportionally
+            if bank_weights[:, b].mean() > 0.01:  # Only write if weight is significant
+                self.banks[b](new_memory)
+                
+    def forward(self, spectral_vec: torch.Tensor, query: torch.Tensor, 
+                write_data: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """
+        Full memory operation
+        
+        Args:
+            spectral_vec: Color vector for routing
+            query: Read query
+            write_data: Optional data to write
+            
+        Returns:
+            Read memory content
+        """
+        # Read operation
+        read_output = self.read(spectral_vec, query)
+        
+        # Write operation if data provided
+        if write_data is not None:
+            self.write(spectral_vec, write_data)
+            
+        return read_output
+
+
+class SpectralFeatureExtractor(nn.Module):
+    """
+    EXTRACTS MEANINGFUL FEATURES FROM COLOR VECTORS
+    
+    Converts raw color values into meaningful spectral features
+    for downstream processing.
+    """
+    
+    def __init__(self, output_dim: int = 64):
+        super().__init__()
+        
+        self.output_dim = output_dim
+        
+        # Process RGB channels
+        self.rgb_processor = nn.Sequential(
+            nn.Linear(3, 16),
+            nn.ReLU(),
+            nn.Linear(16, 16)
+        )
+        
+        # Process IR/UV channels
+        self.iruv_processor = nn.Sequential(
+            nn.Linear(2, 8),
+            nn.ReLU(),
+            nn.Linear(8, 8)
+        )
+        
+        # Process normals
+        self.normal_processor = nn.Sequential(
+            nn.Linear(3, 8),
+            nn.ReLU(),
+            nn.Linear(8, 8)
+        )
+        
+        # Combine all features
+        self.combiner = nn.Sequential(
+            nn.Linear(16 + 8 + 8, output_dim),
+            nn.LayerNorm(output_dim),
+            nn.Tanh()
+        )
+        
+        # Calculate derived spectral features
+        self.spectral_features = nn.Sequential(
+            nn.Linear(output_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, output_dim)
+        )
+        
+    def forward(self, spectral_vec: torch.Tensor) -> torch.Tensor:
+        """
+        Extract spectral features
+        
+        Args:
+            spectral_vec: [batch, SPECTRAL_DIM] color vector
+            
+        Returns:
+            Extracted features [batch, output_dim]
+        """
+        # Split spectral components
+        rgb = spectral_vec[:, :3]           # R, G, B
+        iruv = spectral_vec[:, 3:5]         # IR, UV
+        normals = spectral_vec[:, 5:8]      # Surface normals
+        
+        # Process each component
+        rgb_features = self.rgb_processor(rgb)
+        iruv_features = self.iruv_processor(iruv)
+        normal_features = self.normal_processor(normals)
+        
+        # Combine features
+        combined = torch.cat([rgb_features, iruv_features, normal_features], dim=-1)
+        base_features = self.combiner(combined)
+        
+        # Calculate additional spectral features
+        spectral_enhanced = self.spectral_features(base_features)
+        
+        return base_features + spectral_enhanced  # Residual connection
+
+
+class QuantumSpectrometryGenerator(nn.Module):
+    """
+    QUANTUM AUGMENTED SPECTROMETRY RETRIEVAL GENERATOR
+    
+    Main model that combines:
+    1. ColorVectorRouter - Directs code flow based on spectral properties
+    2. SpectrumMemoryBank - Indexed memory system
+    3. SpectralFeatureExtractor - Feature extraction
+    4. Quantum Processing - Enhanced by Qiskit QNN
+    
+    Usage:
+        # Create model
+        generator = QuantumSpectrometryGenerator()
+        
+        # Create color vector (R, G, B, IR, UV, NormX, NormY, NormZ)
+        color_vec = torch.tensor([[128, 200, 50, 100, 150, 0.5, 0.5, 0.8]])
+        
+        # Process through generator
+        output = generator(color_vec)
+        
+        # Get routing info for debugging
+        _, routing_info = generator(color_vec)
+    """
+    
+    def __init__(self, 
+                 memory_dim: int = 256,
+                 feature_dim: int = 64,
+                 enable_quantum: bool = True):
+        super().__init__()
+        
+        self.memory_dim = memory_dim
+        self.feature_dim = feature_dim
+        self.enable_quantum = enable_quantum
+        
+        print("[SPECTROMETRY] Initializing Quantum Spectrometry Generator...")
+        
+        # Component 1: Color Vector Router
+        self.router = ColorVectorRouter(num_paths=8)
+        print("  ✓ ColorVectorRouter initialized")
+        
+        # Component 2: Spectral Feature Extractor
+        self.feature_extractor = SpectralFeatureExtractor(output_dim=feature_dim)
+        print("  ✓ SpectralFeatureExtractor initialized")
+        
+        # Component 3: Spectrum Memory Bank
+        self.memory = SpectrumMemoryBank(memory_dim=memory_dim)
+        print("  ✓ SpectrumMemoryBank initialized")
+        
+        # Component 4: Output Generator
+        self.output_generator = nn.Sequential(
+            nn.Linear(feature_dim + memory_dim, feature_dim * 2),
+            nn.ReLU(),
+            nn.Linear(feature_dim * 2, feature_dim),
+            nn.LayerNorm(feature_dim),
+            nn.Tanh()
+        )
+        print("  ✓ OutputGenerator initialized")
+        
+        # Quantum enhancement (if enabled)
+        if enable_quantum:
+            self._build_quantum_enhancement()
+            print("  ✓ Quantum Enhancement active")
+        
+        print(f"[SPECTROMETRY] Initialization complete!")
+        print(f"  Memory banks: {self.memory.num_banks}")
+        print(f"  Memory dim: {memory_dim}")
+        print(f"  Feature dim: {feature_dim}")
+        print(f"  Quantum enabled: {enable_quantum}")
+        
+    def _build_quantum_enhancement(self):
+        """Build quantum circuit for enhanced processing"""
+        qc = QuantumCircuit(QUBITS_SPEC)
+        self.q_enhance_inputs = [Parameter(f'enh_x{i}') for i in range(QUBITS_SPEC)]
+        self.q_enhance_weights = [Parameter(f'enh_w{i}') for i in range(QUBITS_SPEC)]
+        
+        # Angle encoding
+        for i in range(QUBITS_SPEC):
+            qc.rx(self.q_enhance_inputs[i], i)
+            
+        # Entanglement
+        for i in range(QUBITS_SPEC - 1):
+            qc.cx(i, i + 1)
+        qc.cx(QUBITS_SPEC - 1, 0)
+        
+        # Variational rotations
+        for i in range(QUBITS_SPEC):
+            qc.ry(self.q_enhance_weights[i], i)
+            
+        qnn = EstimatorQNN(
+            circuit=qc,
+            input_params=self.q_enhance_inputs,
+            weight_params=self.q_enhance_weights
+        )
+        
+        self.q_enhancement = TorchConnector(qnn)
+        
+        # Adapter for quantum output
+        self.q_adapter = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU(),
+            nn.Linear(32, self.feature_dim)
+        )
+        
+    def forward(self, 
+                spectral_vec: torch.Tensor,
+                query: Optional[torch.Tensor] = None,
+                write_data: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict]:
+        """
+        Main forward pass
+        
+        Args:
+            spectral_vec: [batch, SPECTRAL_DIM] color-based input vector
+            query: Optional [batch, query_dim] for memory retrieval
+            write_data: Optional [batch, memory_dim] for memory writing
+            
+        Returns:
+            output: [batch, feature_dim] processed output
+            info: Dict with routing and processing info
+        """
+        batch_size = spectral_vec.shape[0]
+        
+        # Step 1: Route code flow based on color vector
+        path_weights, routing_info = self.router(spectral_vec)
+        
+        # Step 2: Extract spectral features
+        spectral_features = self.feature_extractor(spectral_vec)
+        
+        # Step 3: Memory operation (read + optional write)
+        if query is None:
+            query = spectral_features
+            
+        memory_output = self.memory(spectral_vec, query, write_data)
+        
+        # Step 4: Quantum enhancement
+        if self.enable_quantum:
+            # Compress for quantum
+            x_q = spectral_vec.mean(dim=1, keepdim=True).repeat(1, QUBITS_SPEC)
+            q_enhance = self.q_enhancement(x_q)
+            
+            # Handle quantum output shape: EstimatorQNN may return various shapes
+            # We need to reduce to (batch, 1) for the q_adapter (nn.Linear(1, 32))
+            q_enhance_flat = q_enhance.reshape(q_enhance.shape[0], -1)  # [batch, N]
+            q_enhance_scalar = q_enhance_flat.mean(dim=-1, keepdim=True)  # [batch, 1]
+            
+            # Ensure correct shape for adapter
+            if q_enhance_scalar.shape[-1] != 1:
+                q_enhance_scalar = q_enhance_scalar.mean(dim=-1, keepdim=True)
+            
+            q_enhanced = self.q_adapter(q_enhance_scalar)
+            
+            # Blend classical and quantum
+            quantum_factor = routing_info['processing_intensity']
+            enhanced_features = spectral_features + quantum_factor * q_enhanced
+        else:
+            enhanced_features = spectral_features
+            
+        # Step 5: Generate output
+        combined = torch.cat([enhanced_features, memory_output], dim=-1)
+        output = self.output_generator(combined)
+        
+        # Build info dict
+        info = {
+            'routing': routing_info,
+            'path_weights': path_weights,
+            'spectral_features_norm': spectral_features.norm(dim=-1).mean().item(),
+            'memory_output_norm': memory_output.norm(dim=-1).mean().item(),
+            'output_norm': output.norm(dim=-1).mean().item()
+        }
+        
+        return output, info
+
+
+# --- CONVENIENCE FUNCTIONS ---
+
+def create_spectral_vector(red: int = 128, green: int = 128, blue: int = 128,
+                           ir: int = 128, uv: int = 128,
+                           norm_x: float = 0.5, norm_y: float = 0.5, norm_z: float = 0.5) -> torch.Tensor:
+    """
+    Create a spectral vector from individual components
+    
+    Args:
+        red: Red channel (0-255, processing intensity)
+        green: Green channel (0-255, memory priority)
+        blue: Blue channel (0-255, retrieval mode)
+        ir: Infrared channel (0-255, pattern matching)
+        uv: Ultraviolet channel (0-255, exact matching)
+        norm_x, norm_y, norm_z: Surface normals (0.0-1.0)
+        
+    Returns:
+        Spectral vector tensor [SPECTRAL_DIM]
+    """
+    vec = np.array([
+        red, green, blue, ir, uv,
+        norm_x * 255, norm_y * 255, norm_z * 255
+    ], dtype=np.float32)
+    return torch.from_numpy(vec).unsqueeze(0)
+
+
+def create_spectral_vector_from_text(text: str) -> torch.Tensor:
+    """
+    Create spectral vector from text characteristics
+    
+    This maps text properties to color values:
+    - Text length -> Red (processing intensity)
+    - Complexity -> Green (memory priority)
+    - Ambiguity -> Blue (retrieval mode)
+    """
+    length = len(text)
+    complexity = len(set(text.lower())) / 26  # Unique chars ratio
+    ambiguity = 1.0 - (1.0 / (1.0 + length * 0.1))  # Length-based ambiguity
+    
+    # Map to 0-255 range
+    red = min(255, max(0, int(length * 0.5)))
+    green = min(255, max(0, int(complexity * 255)))
+    blue = min(255, max(0, int(ambiguity * 255)))
+    ir = min(255, max(0, int(complexity * 255 * 0.8)))
+    uv = min(255, max(0, int((1 - complexity) * 255 * 0.8)))
+    
+    return create_spectral_vector(red, green, blue, ir, uv)
+
+
+# --- DEMO / TEST ---
+
+if __name__ == "__main__":
+    print("\n" + "="*70)
+    print("QUANTUM SPECTROMETRY RETRIEVAL GENERATOR - DEMO")
+    print("="*70 + "\n")
+    
+    # Create generator
+    generator = QuantumSpectrometryGenerator(memory_dim=256, feature_dim=64)
+    generator.eval()
+    
+    # Test 1: High-intensity processing (Red-heavy)
+    print("[TEST 1] High-intensity processing (Red=200, Green=100, Blue=100)")
+    vec1 = create_spectral_vector(red=200, green=100, blue=100, ir=150, uv=50)
+    out1, info1 = generator(vec1)
+    print(f"  Output norm: {info1['output_norm']:.4f}")
+    print(f"  Routing: intensity={info1['routing']['processing_intensity']:.2f}, "
+          f"mode={info1['routing']['retrieval_mode']}")
+    
+    # Test 2: High-priority memory (Green-heavy)
+    print("\n[TEST 2] High-priority memory (Red=100, Green=200, Blue=100)")
+    vec2 = create_spectral_vector(red=100, green=200, blue=100, ir=100, uv=150)
+    out2, info2 = generator(vec2)
+    print(f"  Output norm: {info2['output_norm']:.4f}")
+    print(f"  Routing: priority={info2['routing']['memory_priority']:.2f}, "
+          f"exact_match={info2['routing']['exact_match_enabled']}")
+    
+    # Test 3: Fuzzy retrieval (Blue-heavy)
+    print("\n[TEST 3] Fuzzy retrieval (Red=100, Green=100, Blue=200)")
+    vec3 = create_spectral_vector(red=100, green=100, blue=200, ir=50, uv=150)
+    out3, info3 = generator(vec3)
+    print(f"  Output norm: {info3['output_norm']:.4f}")
+    print(f"  Routing: mode={info3['routing']['retrieval_mode']}, "
+          f"fuzzy_enabled={info3['routing']['pattern_match_enabled']}")
+    
+    # Test 4: Text-based spectral vector
+    print("\n[TEST 4] Text-based spectral vector")
+    text = "Quantum computing and neural networks"
+    vec4 = create_spectral_vector_from_text(text)
+    print(f"  Text: '{text}'")
+    print(f"  Spectral vector shape: {vec4.shape}")
+    out4, info4 = generator(vec4)
+    print(f"  Output norm: {info4['output_norm']:.4f}")
+    
+    # Summary
+    print("\n" + "="*70)
+    print("DEMO COMPLETE")
+    print("="*70)
+    print("\nUse QuantumSpectrometryGenerator for:")
+    print("  • Color-directed code flow routing")
+    print("  • Spectrum-indexed memory retrieval")
+    print("  • Quantum-enhanced spectral processing")
+    print("\n" + "="*70 + "\n")
