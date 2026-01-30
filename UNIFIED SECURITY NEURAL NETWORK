@@ -1,0 +1,405 @@
+#!/usr/bin/env python3
+"""
+UNIFIED SECURITY NEURAL NETWORK
+================================
+Integrates:
+- TitanQuantumBrainv2 for encryption validation
+- Sponge cipher for geometry-based encryption
+- NEMESIS threat detection for adaptive security
+- Spectral vectors for cryptographic key material
+
+Architecture:
+Brain validates each encrypted symbol by checking if sponge geometry,
+color, and angle combinations match expected quantum signatures.
+"""
+
+import sys
+sys.path.insert(0, '/workspaces/Dodeca')
+
+import torch
+import torch.nn as nn
+import numpy as np
+from typing import Dict, List, Tuple
+import json
+import hashlib
+from datetime import datetime
+
+from quantum_cryptography_sponge import (
+    QuantumCryptographySecurityModel,
+    MengerSpongeGeometry,
+    NEMESISThreatAdapter
+)
+
+# ============================================================
+# QUANTUM BRAIN CIPHER VALIDATOR
+# ============================================================
+
+class QuantumBrainCipherValidator(nn.Module):
+    """
+    Neural network that validates encrypted symbols using brain architecture.
+    Learns to recognize valid sponge-cipher patterns vs forged/tampered data.
+    """
+    
+    def __init__(self, input_dim: int = 64, hidden_dim: int = 128):
+        super().__init__()
+        self.input_dim = input_dim
+        
+        # Feature extraction from encrypted packet (no batchnorm for single samples)
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, 64),
+            nn.ReLU()
+        )
+        
+        # Brain-like processing (mimics TitanQuantumBrainv2)
+        self.quantum_processor = nn.Sequential(
+            nn.Linear(64, 48),
+            nn.ReLU(),
+            nn.Linear(48, 32),
+            nn.ReLU(),
+            nn.Linear(32, 16)
+        )
+        
+        # Validation head - outputs confidence score
+        self.validator_head = nn.Sequential(
+            nn.Linear(16, 8),
+            nn.ReLU(),
+            nn.Linear(8, 2)  # Binary: valid/invalid
+        )
+        
+        # Threat adaptation head
+        self.threat_adapter = nn.Sequential(
+            nn.Linear(16, 8),
+            nn.Sigmoid()  # Outputs threat level 0-1
+        )
+    
+    def forward(self, encrypted_features: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Validate encrypted symbol and estimate threat level.
+        
+        Returns:
+            validation_scores: [batch_size, 2] - logits for valid/invalid
+            threat_estimate: [batch_size, 1] - threat level
+        """
+        # Handle variable batch dimensions
+        if len(encrypted_features.shape) == 1:
+            encrypted_features = encrypted_features.unsqueeze(0)
+        
+        batch_size = encrypted_features.shape[0]
+        
+        features = self.feature_extractor(encrypted_features)
+        quantum_output = self.quantum_processor(features)
+        
+        validation_scores = self.validator_head(quantum_output)
+        threat_estimate = self.threat_adapter(quantum_output)
+        
+        return validation_scores, threat_estimate
+
+
+# ============================================================
+# SYMBOL ENCRYPTION PACKAGE BUILDER
+# ============================================================
+
+class EncryptedSymbolFeatures:
+    """
+    Converts encrypted symbol data into neural network input features.
+    Extracts: angles, colors, quantum keys, sponge density into fixed-size vector.
+    """
+    
+    def __init__(self):
+        self.feature_dim = 64
+    
+    def build_features(self, encrypted_packet: Dict) -> np.ndarray:
+        """
+        Convert encrypted packet into 64D feature vector for neural validation.
+        """
+        features = np.zeros(self.feature_dim)
+        
+        # Normalize and pack angles (8 angles → 8 features)
+        angles = np.array(encrypted_packet['angles'][:8])
+        angles_normalized = angles / (2 * np.pi)  # Normalize to [0, 1]
+        features[0:8] = angles_normalized
+        
+        # Pack colors (HSV → 3 features)
+        color = encrypted_packet['color_hsv']
+        features[8] = color['hue']
+        features[9] = color['saturation']
+        features[10] = color['value']
+        
+        # Pack quantum key (4 features, binary encoded)
+        quantum_key = np.array(encrypted_packet['quantum_key'][:4], dtype=float)
+        features[11:15] = quantum_key
+        
+        # Pack sponge properties (section ID, density, threat level)
+        features[15] = (encrypted_packet['sponge_section_id'] % 20) / 20.0
+        features[16] = encrypted_packet['sponge_density']
+        features[17] = encrypted_packet['threat_level']
+        
+        # Symbol code (ASCII normalized to 0-1)
+        features[18] = (encrypted_packet['symbol_code'] % 256) / 256.0
+        
+        # Hash features (first 4 hex digits of hash converted to normalized values)
+        hash_str = encrypted_packet['hash'][:4]
+        for i, c in enumerate(hash_str[:4]):
+            features[19 + i] = int(c, 16) / 16.0
+        
+        # Padding (remaining features set to 0 or noise pattern)
+        if self.feature_dim > 23:
+            # Create deterministic "signature" for remaining dims
+            signature = hashlib.sha256(
+                f"{encrypted_packet['symbol']}:{encrypted_packet['hash']}".encode()
+            ).digest()
+            remaining_dims = self.feature_dim - 23
+            for i in range(min(remaining_dims, len(signature))):
+                features[23 + i] = (signature[i] % 256) / 256.0
+        
+        return features
+
+
+# ============================================================
+# INTEGRATED SECURITY SYSTEM
+# ============================================================
+
+class UnifiedCryptographicSecuritySystem:
+    """
+    Complete security system combining:
+    1. Quantum cryptography with Menger Sponge
+    2. Neural validation via TitanQuantumBrain-inspired validator
+    3. NEMESIS threat detection and adaptive encryption
+    4. Real-time threat response
+    """
+    
+    def __init__(self, device: str = "cpu"):
+        self.device = torch.device(device)
+        
+        # Core components
+        self.security_model = QuantumCryptographySecurityModel()
+        self.validator = QuantumBrainCipherValidator(input_dim=64, hidden_dim=128).to(self.device)
+        self.feature_builder = EncryptedSymbolFeatures()
+        
+        # Loss and optimizer for validator training
+        self.criterion = nn.CrossEntropyLoss()
+        self.optimizer = torch.optim.Adam(self.validator.parameters(), lr=1e-3)
+        
+        # Threat assessment
+        self.threat_adapter = NEMESISThreatAdapter()
+        
+        # Logs
+        self.validation_log = []
+        self.threat_log = []
+        
+    def encrypt_and_validate(self, message: str, attack_data: Dict = None) -> Dict:
+        """
+        Complete pipeline:
+        1. Encrypt message using Sponge + Quantum
+        2. Validate encryption using neural validator
+        3. Log threat intelligence
+        """
+        # Step 1: Encrypt
+        encrypted_symbols = self.security_model.encrypt_message(message, threat_data=attack_data)
+        
+        # Step 2: Validate using neural network
+        validation_results = []
+        for encrypted in encrypted_symbols:
+            features = self.feature_builder.build_features(encrypted)
+            features_tensor = torch.tensor(features, dtype=torch.float32).to(self.device)
+            
+            with torch.no_grad():
+                validation_scores, threat_estimate = self.validator(features_tensor.unsqueeze(0))
+            
+            # Get validation confidence
+            confidence = torch.softmax(validation_scores, dim=1)
+            is_valid = confidence[0, 1] > 0.5  # Probability of being valid
+            threat_level = threat_estimate[0, 0].item()
+            
+            validation_results.append({
+                'symbol': encrypted['symbol'],
+                'validation_confidence': confidence[0, 1].item(),
+                'is_valid': bool(is_valid),
+                'threat_estimate': threat_level,
+                'encrypted_packet': encrypted
+            })
+        
+        # Step 3: Generate security report
+        all_valid = all(v['is_valid'] for v in validation_results)
+        avg_threat = np.mean([v['threat_estimate'] for v in validation_results])
+        
+        report = {
+            'message': message,
+            'total_symbols': len(encrypted_symbols),
+            'valid_symbols': sum(1 for v in validation_results if v['is_valid']),
+            'all_valid': all_valid,
+            'average_threat_level': avg_threat,
+            'validation_results': validation_results,
+            'timestamp': datetime.now().isoformat(),
+            'attack_data': attack_data or {}
+        }
+        
+        self.validation_log.append(report)
+        
+        return report
+    
+    def train_validator(self, training_epochs: int = 10):
+        """
+        Train validator network on encrypted symbol examples.
+        Learns to distinguish valid sponge-encrypted symbols from attacks.
+        """
+        print(f"\n[TRAINING] Validator network for {training_epochs} epochs...")
+        
+        # Generate synthetic training data
+        valid_symbols = []
+        invalid_symbols = []
+        
+        # Valid encrypted symbols
+        for _ in range(50):
+            msg = "SECURE"
+            encrypted = self.security_model.encrypt_message(msg, threat_data=None)
+            for enc in encrypted:
+                features = self.feature_builder.build_features(enc)
+                valid_symbols.append((features, 1))  # Label: 1 = valid
+        
+        # Invalid/tampered symbols (simulated by adding noise)
+        for _ in range(50):
+            msg = "SECURE"
+            encrypted = self.security_model.encrypt_message(msg, threat_data=None)
+            for enc in encrypted:
+                features = self.feature_builder.build_features(enc)
+                # Add tampering noise
+                features += np.random.normal(0, 0.1, features.shape)
+                invalid_symbols.append((features, 0))  # Label: 0 = invalid
+        
+        training_data = valid_symbols + invalid_symbols
+        np.random.shuffle(training_data)
+        
+        # Training loop
+        self.validator.train()
+        for epoch in range(training_epochs):
+            epoch_loss = 0
+            correct = 0
+            total = 0
+            
+            for features, label in training_data:
+                features_tensor = torch.tensor(features, dtype=torch.float32).to(self.device)
+                label_tensor = torch.tensor(label, dtype=torch.long).to(self.device)
+                
+                self.optimizer.zero_grad()
+                validation_scores, _ = self.validator(features_tensor)
+                
+                loss = self.criterion(validation_scores, label_tensor.unsqueeze(0))
+                loss.backward()
+                self.optimizer.step()
+                
+                epoch_loss += loss.item()
+                
+                # Accuracy
+                pred = torch.argmax(validation_scores, dim=1)
+                correct += (pred == label_tensor.unsqueeze(0)).sum().item()
+                total += 1
+            
+            avg_loss = epoch_loss / len(training_data)
+            accuracy = correct / total
+            
+            if (epoch + 1) % 2 == 0:
+                print(f"  Epoch {epoch+1}/{training_epochs} - Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2%}")
+        
+        print(f"✓ Validator training complete")
+        self.validator.eval()
+    
+    def generate_security_report(self) -> Dict:
+        """Generate comprehensive security analysis"""
+        if not self.validation_log:
+            return {'status': 'No activity recorded'}
+        
+        total_messages = len(self.validation_log)
+        total_symbols = sum(log['total_symbols'] for log in self.validation_log)
+        valid_symbols = sum(log['valid_symbols'] for log in self.validation_log)
+        threats_detected = sum(1 for log in self.validation_log if log['average_threat_level'] > 0.6)
+        
+        return {
+            'total_messages': total_messages,
+            'total_symbols_encrypted': total_symbols,
+            'valid_symbols': valid_symbols,
+            'integrity_rate': valid_symbols / total_symbols if total_symbols > 0 else 0,
+            'threats_detected': threats_detected,
+            'average_threat_level': np.mean([log['average_threat_level'] for log in self.validation_log]),
+            'security_status': 'SECURE' if threats_detected == 0 else 'THREATS DETECTED',
+            'timestamp': datetime.now().isoformat()
+        }
+
+
+# ============================================================
+# DEMONSTRATION
+# ============================================================
+
+if __name__ == "__main__":
+    import hashlib
+    
+    print("\n" + "="*80)
+    print("UNIFIED CRYPTOGRAPHIC SECURITY SYSTEM")
+    print("TitanQuantumBrain + Sponge Cipher + NEMESIS Threat Intel")
+    print("="*80)
+    
+    # Initialize system
+    system = UnifiedCryptographicSecuritySystem(device="cpu")
+    
+    print("\n[1] TRAINING VALIDATOR NETWORK")
+    print("-" * 80)
+    system.train_validator(training_epochs=10)
+    
+    print("\n[2] ENCRYPTING MESSAGE WITH THREAT DETECTION")
+    print("-" * 80)
+    
+    # Scenario 1: High-threat attack detected
+    attack_scenario = {
+        'attack_type': 'SQL_Injection',
+        'sql_injection': True,
+        'xss_attempt': True,
+        'brute_force': True,
+        'payload_detected': True,
+        'is_repeat': True
+    }
+    
+    message = "ALERT"
+    print(f"Message: {message}")
+    print(f"Threat Level: CRITICAL")
+    print(f"Attack Types: SQL Injection, XSS, Brute Force, Repeat Offender")
+    
+    report = system.encrypt_and_validate(message, attack_data=attack_scenario)
+    
+    print(f"\n✓ Encryption Complete")
+    print(f"  Total symbols: {report['total_symbols']}")
+    print(f"  Valid symbols: {report['valid_symbols']}")
+    print(f"  All valid: {report['all_valid']}")
+    print(f"  Average threat level: {report['average_threat_level']:.2f}")
+    
+    print("\n[3] DETAILED SYMBOL ANALYSIS (First Symbol)")
+    print("-" * 80)
+    first_result = report['validation_results'][0]
+    packet = first_result['encrypted_packet']
+    
+    print(f"Symbol: '{first_result['symbol']}'")
+    print(f"Neural Validation Confidence: {first_result['validation_confidence']:.4f}")
+    print(f"Is Valid: {first_result['is_valid']}")
+    print(f"Threat Estimate: {first_result['threat_estimate']:.4f}")
+    print(f"\nEncryption Details:")
+    print(f"  Sponge Section: {packet['sponge_section_id']}")
+    print(f"  Sponge Density: {packet['sponge_density']:.4f}")
+    print(f"  Color (HSV): H={packet['color_hsv']['hue']:.2f}, S={packet['color_hsv']['saturation']:.2f}, V={packet['color_hsv']['value']:.2f}")
+    print(f"  Vector Angles: {[f'{a:.3f}' for a in packet['angles'][:4]]}")
+    print(f"  Quantum Key: {packet['quantum_key']}")
+    print(f"  Integrity Hash: {packet['hash']}")
+    
+    print("\n[4] SECURITY REPORT")
+    print("-" * 80)
+    security_report = system.generate_security_report()
+    for key, value in security_report.items():
+        if isinstance(value, float):
+            print(f"{key}: {value:.4f}")
+        else:
+            print(f"{key}: {value}")
+    
+    print("\n" + "="*80)
+    print("✓ UNIFIED CRYPTOGRAPHIC SECURITY SYSTEM OPERATIONAL")
+    print("="*80 + "\n")
