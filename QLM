@@ -1,0 +1,119 @@
+import torch
+import torch.nn as nn
+import numpy as np
+
+# --- IBM QUANTUM LIBRARIES ---
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit_aer import AerSimulator
+from qiskit_machine_learning.connectors import TorchConnector
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+
+# --- CONFIGURATION ---
+N_QUBITS = 4  # The Quantum Core size
+SHOTS = 1024
+
+class QuantumRootLayer(nn.Module):
+    """
+    THE REAL QUANTUM CORE.
+    This replaces the standard math with a Quantum Circuit.
+    Data is processed by actual Qubit Rotation and Entanglement.
+    """
+    def __init__(self):
+        super().__init__()
+        print("[INIT] Building IBM Quantum Circuit for Root Layer...")
+        
+        # 1. Define the Quantum Circuit
+        qc = QuantumCircuit(N_QUBITS)
+        
+        # 2. Define Parameters (The "Weights" of the quantum brain)
+        # We need input parameters (Data) and weight parameters (Learning)
+        self.params = [Parameter(f'w{i}') for i in range(N_QUBITS)]
+        self.inputs = [Parameter(f'x{i}') for i in range(N_QUBITS)]
+        
+        # 3. Encoding Data (Angle Encoding)
+        # Map the incoming numbers to Qubit Angles
+        for i in range(N_QUBITS):
+            qc.rx(self.inputs[i], i)
+            
+        # 4. Entanglement (The "Meaning" connection)
+        # CNOT gates connect the qubits in a ring
+        for i in range(N_QUBITS-1):
+            qc.cx(i, i+1)
+        qc.cx(N_QUBITS-1, 0) # Close the loop
+        
+        # 5. Trainable Rotation (The Learning)
+        for i in range(N_QUBITS):
+            qc.ry(self.params[i], i)
+            
+        # 6. Create the Neural Network Interface
+        # This bridges Qiskit to PyTorch
+        self.qnn = EstimatorQNN(
+            circuit=qc,
+            input_params=self.inputs,
+            weight_params=self.params
+        )
+        
+        self.quantum_layer = TorchConnector(self.qnn)
+
+    def forward(self, x):
+        # x shape: [Batch, N_QUBITS]
+        # Pass data through the Quantum Circuit
+        q_out = self.quantum_layer(x)
+        
+        # Handle quantum output shape: EstimatorQNN may return various shapes
+        # Return flattened output to avoid shape issues in downstream layers
+        q_out_flat = q_out.reshape(q_out.shape[0], -1)  # [batch, N]
+        return q_out_flat
+
+# --- THE HYBRID MODEL ---
+class HybridQFLM(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # 1. Classical Encoding (Shrink data to fit Quantum Core)
+        self.encoder = nn.Linear(512, N_QUBITS)
+        
+        # 2. THE QUANTUM ROOT (Qiskit)
+        self.root = QuantumRootLayer()
+        
+        # 3. Classical Expansion (Expand back to Language size)
+        self.decoder = nn.Linear(N_QUBITS, 512)
+
+    def forward(self, x):
+        # Down-sample to quantum size
+        x_small = torch.tanh(self.encoder(x))
+        
+        # PROCESS IN QUANTUM REALM
+        # This is where the actual "Thinking" happens on the simulator
+        x_quantum = self.root(x_small)
+        
+        # Reshape quantum output to proper dimensions
+        # EstimatorQNN outputs shape (batch, 1), we need (batch, N_QUBITS)
+        if x_quantum.shape[-1] == 1:
+            # Expand the scalar output across N_QUBITS dimensions
+            x_quantum = x_quantum.repeat(1, N_QUBITS)
+        
+        # Up-sample back to language
+        x_out = self.decoder(x_quantum)
+        return x_out
+
+# --- EXECUTION ---
+if __name__ == "__main__":
+    print("\n--- HYBRID QUANTUM-CLASSICAL HANDSHAKE ---")
+    
+    # Initialize
+    model = HybridQFLM()
+    
+    # Simulate a word vector (Batch size 1, 512 dimensions)
+    dummy_input = torch.randn(1, 512)
+    
+    print("\n[STEP 1] Injecting Data into Qubits...")
+    output = model(dummy_input)
+    
+    print("\n[STEP 2] Wavefunction Collapsed.")
+    print(f"Output Vector Shape: {output.shape}")
+    print("Values (First 5):", output[0][:5].detach().numpy())
+    
+    print("\n[DODECA]: The Root Logic is now handled by Qiskit.")
+    print("[DODECA]: We are encoding language into the spin of electrons.")
