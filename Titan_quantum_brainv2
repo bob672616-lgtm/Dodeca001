@@ -1,0 +1,314 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import random
+
+# --- QUANTUM IMPORTS ---
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit_machine_learning.connectors import TorchConnector
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+from qiskit_aer import AerSimulator
+
+# --- CONFIGURATION ---
+INPUT_DIM = 8   # The 8-Channel Voxel (RGB, IR, UV, Normals)
+HIDDEN_DIM = 64
+NUM_QUBITS = 4
+
+# --- 1. THE QUANTUM ROUTER (THE SOUL) ---
+class QuantumRouter(nn.Module):
+    """
+    Decides which Fractal Node handles the data using Entanglement.
+    """
+    def __init__(self, num_nodes):
+        super().__init__()
+        
+        # Define Quantum Circuit
+        qc = QuantumCircuit(NUM_QUBITS)
+        self.inputs = [Parameter(f'x{i}') for i in range(NUM_QUBITS)]
+        self.weights = [Parameter(f'w{i}') for i in range(NUM_QUBITS)]
+        
+        # Encoding (Angle Embedding)
+        for i in range(NUM_QUBITS):
+            qc.rx(self.inputs[i], i)
+            
+        # Entanglement (The "Web")
+        for i in range(NUM_QUBITS-1):
+            qc.cx(i, i+1)
+        qc.cx(NUM_QUBITS-1, 0)
+        
+        # Variational Layer (Learning)
+        for i in range(NUM_QUBITS):
+            qc.ry(self.weights[i], i)
+            
+        # QNN Wrapper
+        qnn = EstimatorQNN(
+            circuit=qc,
+            input_params=self.inputs,
+            weight_params=self.weights
+        )
+        self.q_layer = TorchConnector(qnn)
+        
+        # Map Quantum Output to Node Probabilities
+        self.adapter = nn.Linear(1, num_nodes) 
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        # Compress input to quantum dim
+        x_reduced = torch.mean(x, dim=1, keepdim=True).repeat(1, NUM_QUBITS)
+        # Quantum Pass
+        q_out = self.q_layer(x_reduced) 
+        
+        # Handle quantum output shape: EstimatorQNN may return various shapes
+        # We need to reduce to (batch, 1) for the adapter (nn.Linear(1, num_nodes))
+        q_out_flat = q_out.reshape(q_out.shape[0], -1)  # [batch, N]
+        q_out_scalar = q_out_flat.mean(dim=-1, keepdim=True)  # [batch, 1]
+        
+        # Ensure correct shape for adapter
+        if q_out_scalar.shape[-1] != 1:
+            q_out_scalar = q_out_scalar.mean(dim=-1, keepdim=True)
+        
+        # Route
+        routing_weights = self.softmax(self.adapter(q_out_scalar))
+        return routing_weights
+
+# --- 2. THE NANO-MODEL (THE FUNCTIONAL NODE) ---
+class NanoFractalNode(nn.Module):
+    """
+    A single block in the Menger Sponge.
+    It specializes in one task based on its coordinate position.
+    """
+    def __init__(self, coords):
+        super().__init__()
+        self.coords = coords # (x, y, z)
+        
+        # The 8-Channel Processing Logic
+        self.process = nn.Sequential(
+            nn.Linear(INPUT_DIM, HIDDEN_DIM),
+            nn.SiLU(), # Swish activation (Fluid)
+            nn.Linear(HIDDEN_DIM, INPUT_DIM) # Return same shape
+        )
+        
+    def forward(self, x):
+        # Process data
+        return self.process(x)
+
+# --- 3. THE MENGER SPONGE (THE NETWORK) ---
+class TitanMengerBrain(nn.Module):
+    def __init__(self):
+        super().__init__()
+        print(f"[INIT] Constructing Menger Lattice (Level 1)...")
+        
+        self.nodes = nn.ModuleList()
+        self.node_coords = []
+        
+        # Generate Menger Coordinates (3x3x3 grid, remove center & face centers)
+        # Coordinates range -1 to 1
+        for x in [-1, 0, 1]:
+            for y in [-1, 0, 1]:
+                for z in [-1, 0, 1]:
+                    # Menger Condition: Sum of absolute coordinates > 1
+                    # (Center is 0,0,0 sum=0. Face centers have sum=1)
+                    # Corners/Edges have sum > 1
+                    if (abs(x) + abs(y) + abs(z)) > 1:
+                        node = NanoFractalNode((x, y, z))
+                        self.nodes.append(node)
+                        self.node_coords.append((x,y,z))
+        
+        self.num_nodes = len(self.nodes)
+        print(f"[INIT] Lattice Complete. Active Nodes: {self.num_nodes}/27")
+        
+        # The Quantum Router
+        self.router = QuantumRouter(self.num_nodes)
+        
+        # Aggregation
+        self.output_gate = nn.Linear(INPUT_DIM, INPUT_DIM)
+
+    def forward(self, x):
+        # 1. QUANTUM ROUTING
+        # Which nodes should process this thought?
+        # Returns a weight [0.0 - 1.0] for each of the 20 nodes
+        route_weights = self.router(x)
+        
+        # 2. FRACTAL PROCESSING
+        total_output = torch.zeros_like(x)
+        
+        # We iterate through the active nodes (The Menger Sponge)
+        for i, node in enumerate(self.nodes):
+            # Get the importance of this node for this specific data
+            importance = route_weights[:, i].unsqueeze(1)
+            
+            # The Node thinks
+            node_out = node(x)
+            
+            # Weighted Sum (Mixture of Experts)
+            total_output += node_out * importance
+            
+        return self.output_gate(total_output)
+
+# --- 4. SYNTAX TRANSLATOR (LOGGING) ---
+def physics_logger(input_vec, routing_weights, coords):
+    """
+    Translates the neural activity into the Physics Syntax we defined.
+    """
+    # Find the "Winning" Node (Highest weight)
+    best_idx = torch.argmax(routing_weights).item()
+    best_coord = coords[best_idx]
+    
+    print("\n--- [TITAN NEURAL EVENT LOG] ---")
+    print(f"INPUT TENSOR:  |Ψ_in⟩ (8-Channel Voxel)")
+    print(f"ROUTER STATE:  Collapsed via Qiskit Circuit")
+    print(f"DECISION PATH: Hamiltonian vector -> Node_{best_idx} at {best_coord}")
+    print(f"TOPOLOGY:      Menger_Sponge[1] :: Activated")
+    print(f"OUTPUT:        ΔS (Entropy Change) Processed.")
+    print("--------------------------------")
+
+# --- 5. TRAINING UTILITIES ---
+class TitanTrainer:
+    """
+    Trainer class for the Titan Quantum Brain with gradient support
+    """
+    def __init__(self, model, learning_rate=0.001):
+        self.model = model
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        self.loss_fn = nn.MSELoss()
+        self.loss_history = []
+    
+    def train_step(self, input_data, target_data):
+        """
+        Single training step with gradient computation
+        """
+        # Forward pass
+        output = self.model(input_data)
+        
+        # Compute loss
+        loss = self.loss_fn(output, target_data)
+        
+        # Backward pass (compute gradients)
+        self.optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping (prevent explosion)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        
+        # Update parameters
+        self.optimizer.step()
+        
+        # Record loss
+        self.loss_history.append(loss.item())
+        
+        return loss.item(), output
+    
+    def eval_step(self, input_data, target_data):
+        """
+        Evaluation step (no gradients)
+        """
+        with torch.no_grad():
+            output = self.model(input_data)
+            loss = self.loss_fn(output, target_data)
+        return loss.item(), output
+    
+    def get_gradients(self):
+        """
+        Print gradient statistics
+        """
+        print("\n[GRADIENT ANALYSIS]")
+        total_norm = 0.0
+        param_count = 0
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                param_norm = param.grad.data.norm(2)
+                total_norm += param_norm.item() ** 2
+                param_count += 1
+                print(f"  {name:40s}: grad_norm = {param_norm.item():.6f}")
+        
+        total_norm = total_norm ** 0.5
+        print(f"\n  Total gradient norm: {total_norm:.6f}")
+        print(f"  Parameters with gradients: {param_count}")
+
+# --- EXECUTION ---
+if __name__ == "__main__":
+    # Initialize the Titan
+    titan = TitanMengerBrain()
+    
+    # ===== INFERENCE EXAMPLE =====
+    print("\n" + "="*60)
+    print("[INFERENCE MODE]")
+    print("="*60)
+    
+    # Simulate a Data Stream (Batch of 1, 8 Channels)
+    # [RGB, IR, UV, Normals...]
+    data_packet = torch.randn(1, INPUT_DIM)
+    
+    # Run the Brain
+    output = titan(data_packet)
+    
+    # Extract routing weights for the log
+    weights = titan.router(data_packet)
+    
+    # Generate the Physics Report
+    physics_logger(data_packet, weights, titan.node_coords)
+    
+    # ===== TRAINING EXAMPLE =====
+    print("\n" + "="*60)
+    print("[TRAINING MODE WITH GRADIENTS]")
+    print("="*60)
+    
+    # Create trainer
+    trainer = TitanTrainer(titan, learning_rate=0.001)
+    
+    # Simulate training data
+    print("\n[Training] Processing synthetic data batches...")
+    num_epochs = 3
+    batch_size = 4
+    
+    for epoch in range(num_epochs):
+        epoch_loss = 0.0
+        num_batches = 5
+        
+        for batch_idx in range(num_batches):
+            # Generate synthetic training data
+            input_batch = torch.randn(batch_size, INPUT_DIM)
+            # Target: simple transformation (could be anything)
+            target_batch = input_batch * 0.5 + torch.randn_like(input_batch) * 0.1
+            
+            # Training step
+            loss, pred = trainer.train_step(input_batch, target_batch)
+            epoch_loss += loss
+        
+        avg_loss = epoch_loss / num_batches
+        print(f"\nEpoch {epoch+1}/{num_epochs} - Loss: {avg_loss:.6f}")
+    
+    # Show gradient information
+    trainer.get_gradients()
+    
+    # ===== INFERENCE WITH GRADIENT COMPUTATION =====
+    print("\n" + "="*60)
+    print("[INFERENCE WITH GRADIENT TRACKING]")
+    print("="*60)
+    
+    # Create new data with gradient tracking
+    test_input = torch.randn(1, INPUT_DIM, requires_grad=True)
+    test_target = torch.randn(1, INPUT_DIM)
+    
+    # Forward pass
+    test_output = titan(test_input)
+    loss = nn.MSELoss()(test_output, test_target)
+    
+    # Compute gradients w.r.t. input
+    loss.backward()
+    
+    print(f"\nTest Input Loss: {loss.item():.6f}")
+    print(f"Input Gradient Norm: {test_input.grad.norm().item():.6f}")
+    print(f"Input Gradient Shape: {test_input.grad.shape}")
+    
+    # ===== SUMMARY =====
+    print("\n" + "="*60)
+    print("[GRADIENT SUPPORT SUMMARY]")
+    print("="*60)
+    print("\n✓ Model structure supports gradients")
+    print("✓ Backpropagation enabled")
+    print(f"✓ Total trainable parameters: {sum(p.numel() for p in titan.parameters())}")
+    print(f"✓ Parameters with gradients: {sum(1 for p in titan.parameters() if p.requires_grad)}")
+    print("\nGradient-based training is now available!")
+    print("Use TitanTrainer class for training workflows")
