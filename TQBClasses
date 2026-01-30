@@ -1,0 +1,1009 @@
+"""
+TITAN QUANTUM BRAIN v2 - CLASS DEFINITIONS
+Extracted classes for modular testing and validation
+"""
+
+import torch
+import torch.nn as nn
+import numpy as np
+import random
+
+# --- QUANTUM IMPORTS ---
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit_machine_learning.connectors import TorchConnector
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+from qiskit_aer import AerSimulator
+
+# --- CONFIGURATION ---
+INPUT_DIM = 8   # The 8-Channel Voxel (RGB, IR, UV, Normals)
+HIDDEN_DIM = 64
+NUM_QUBITS = 4
+
+# --- 1. THE QUANTUM ROUTER (THE SOUL) ---
+class QuantumRouter(nn.Module):
+    """
+    Decides which Fractal Node handles the data using Entanglement.
+    """
+    def __init__(self, num_nodes):
+        super().__init__()
+        
+        # Define Quantum Circuit
+        qc = QuantumCircuit(NUM_QUBITS)
+        self.inputs = [Parameter(f'x{i}') for i in range(NUM_QUBITS)]
+        self.weights = [Parameter(f'w{i}') for i in range(NUM_QUBITS)]
+        
+        # Encoding (Angle Embedding)
+        for i in range(NUM_QUBITS):
+            qc.rx(self.inputs[i], i)
+            
+        # Entanglement (The "Web")
+        for i in range(NUM_QUBITS-1):
+            qc.cx(i, i+1)
+        qc.cx(NUM_QUBITS-1, 0)
+        
+        # Variational Layer (Learning)
+        for i in range(NUM_QUBITS):
+            qc.ry(self.weights[i], i)
+            
+        # QNN Wrapper
+        qnn = EstimatorQNN(
+            circuit=qc,
+            input_params=self.inputs,
+            weight_params=self.weights
+        )
+        self.q_layer = TorchConnector(qnn)
+        
+        # Map Quantum Output to Node Probabilities
+        self.adapter = nn.Linear(1, num_nodes) 
+        self.softmax = nn.Softmax(dim=-1)
+
+    def forward(self, x):
+        # Compress input to quantum dim
+        x_reduced = torch.mean(x, dim=1, keepdim=True).repeat(1, NUM_QUBITS)
+        # Quantum Pass
+        q_out = self.q_layer(x_reduced) 
+        
+        # Handle quantum output shape: EstimatorQNN may return various shapes
+        # We need to reduce to (batch, 1) for the adapter (nn.Linear(1, num_nodes))
+        q_out_flat = q_out.reshape(q_out.shape[0], -1)  # [batch, N]
+        q_out_scalar = q_out_flat.mean(dim=-1, keepdim=True)  # [batch, 1]
+        
+        # Ensure correct shape for adapter
+        if q_out_scalar.shape[-1] != 1:
+            q_out_scalar = q_out_scalar.mean(dim=-1, keepdim=True)
+        
+        # Route
+        routing_weights = self.softmax(self.adapter(q_out_scalar))
+        return routing_weights
+
+# --- 2. THE NANO-MODEL (THE FUNCTIONAL NODE) ---
+class NanoFractalNode(nn.Module):
+    """
+    A single block in the Menger Sponge.
+    It specializes in one task based on its coordinate position.
+    """
+    def __init__(self, coords):
+        super().__init__()
+        self.coords = coords # (x, y, z)
+        
+        # The 8-Channel Processing Logic
+        self.process = nn.Sequential(
+            nn.Linear(INPUT_DIM, HIDDEN_DIM),
+            nn.SiLU(), # Swish activation (Fluid)
+            nn.Linear(HIDDEN_DIM, INPUT_DIM) # Return same shape
+        )
+        
+    def forward(self, x):
+        # Process data
+        return self.process(x)
+
+# --- 3. THE MENGER SPONGE (THE NETWORK) ---
+class TitanMengerBrain(nn.Module):
+    def __init__(self):
+        super().__init__()
+        print(f"[INIT] Constructing Menger Lattice (Level 1)...")
+        
+        self.nodes = nn.ModuleList()
+        self.node_coords = []
+        
+        # Generate Menger Coordinates (3x3x3 grid, remove center & face centers)
+        # Coordinates range -1 to 1
+        for x in [-1, 0, 1]:
+            for y in [-1, 0, 1]:
+                for z in [-1, 0, 1]:
+                    # Menger Condition: Sum of absolute coordinates > 1
+                    # (Center is 0,0,0 sum=0. Face centers have sum=1)
+                    # Corners/Edges have sum > 1
+                    if (abs(x) + abs(y) + abs(z)) > 1:
+                        node = NanoFractalNode((x, y, z))
+                        self.nodes.append(node)
+                        self.node_coords.append((x,y,z))
+        
+        self.num_nodes = len(self.nodes)
+        print(f"[INIT] Lattice Complete. Active Nodes: {self.num_nodes}/27")
+        
+        # The Quantum Router
+        self.router = QuantumRouter(self.num_nodes)
+        
+        # Aggregation
+        self.output_gate = nn.Linear(INPUT_DIM, INPUT_DIM)
+
+    def forward(self, x):
+        # 1. QUANTUM ROUTING
+        # Which nodes should process this thought?
+        # Returns a weight [0.0 - 1.0] for each of the 20 nodes
+        route_weights = self.router(x)
+        
+        # 2. FRACTAL PROCESSING
+        total_output = torch.zeros_like(x)
+        
+        # We iterate through the active nodes (The Menger Sponge)
+        for i, node in enumerate(self.nodes):
+            # Get the importance of this node for this specific data
+            importance = route_weights[:, i].unsqueeze(1)
+            
+            # The Node thinks
+            node_out = node(x)
+            
+            # Weighted Sum (Mixture of Experts)
+            total_output += node_out * importance
+            
+        return self.output_gate(total_output)
+
+# --- 4. SYNTAX TRANSLATOR (LOGGING) ---
+def physics_logger(input_vec, routing_weights, coords):
+    """
+    Translates the neural activity into the Physics Syntax we defined.
+    """
+    # Find the "Winning" Node (Highest weight)
+    best_idx = torch.argmax(routing_weights).item()
+    best_coord = coords[best_idx]
+    
+    print("\n--- [TITAN NEURAL EVENT LOG] ---")
+    print(f"INPUT TENSOR:  |Ψ_in⟩ (8-Channel Voxel)")
+    print(f"ROUTER STATE:  Collapsed via Qiskit Circuit")
+    print(f"DECISION PATH: Hamiltonian vector -> Node_{best_idx} at {best_coord}")
+    print(f"TOPOLOGY:      Menger_Sponge[1] :: Activated")
+    print(f"OUTPUT:        ΔS (Entropy Change) Processed.")
+    print("--------------------------------")
+
+# --- 5. TRAINING UTILITIES ---
+class TitanTrainer:
+    """
+    Trainer class for the Titan Quantum Brain with gradient support
+    """
+    def __init__(self, model, learning_rate=0.001):
+        self.model = model
+        # Ensure all parameters require gradients
+        for param in self.model.parameters():
+            param.requires_grad = True
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
+        self.loss_fn = nn.MSELoss()
+        self.loss_history = []
+        self.last_gradients = None
+    
+    def train_step(self, input_data, target_data):
+        """
+        Single training step with gradient computation
+        """
+        # Ensure model is in training mode
+        self.model.train()
+        
+        # Ensure gradients are enabled
+        for param in self.model.parameters():
+            param.requires_grad = True
+        
+        # Zero gradients from previous step
+        self.optimizer.zero_grad()
+        
+        # Forward pass
+        output = self.model(input_data)
+        
+        # Compute loss
+        loss = self.loss_fn(output, target_data)
+        
+        # Backward pass (compute gradients)
+        loss.backward()
+        
+        # Store gradient information before clipping
+        self.last_gradients = {}
+        for name, param in self.model.named_parameters():
+            if param.grad is not None:
+                self.last_gradients[name] = param.grad.data.norm(2).item()
+        
+        # Gradient clipping (prevent explosion)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        
+        # Update parameters
+        self.optimizer.step()
+        
+        # Record loss
+        self.loss_history.append(loss.item())
+        
+        return loss.item(), output
+    
+    def eval_step(self, input_data, target_data):
+        """
+        Evaluation step (no gradients)
+        """
+        self.model.eval()
+        with torch.no_grad():
+            output = self.model(input_data)
+            loss = self.loss_fn(output, target_data)
+        return loss.item(), output
+    
+    def get_gradients(self):
+        """
+        Print gradient statistics (works even after training step)
+        """
+        print("\n[GRADIENT ANALYSIS]")
+        
+        # Check if we have stored gradients from last training step
+        if self.last_gradients is not None and len(self.last_gradients) > 0:
+            print("  Gradients from last training step:")
+            total_norm = 0.0
+            param_count = 0
+            for name, grad_norm in sorted(self.last_gradients.items()):
+                print(f"    {name:40s}: grad_norm = {grad_norm:.6f}")
+                total_norm += grad_norm ** 2
+                param_count += 1
+            
+            total_norm = total_norm ** 0.5
+            print(f"\n  Total gradient norm: {total_norm:.6f}")
+            print(f"  Parameters with gradients: {param_count}/{sum(1 for _ in self.model.parameters())}")
+        else:
+            # Fallback: Check current gradients
+            print("  Checking current gradients in model:")
+            total_norm = 0.0
+            param_count = 0
+            grad_count = 0
+            for name, param in self.model.named_parameters():
+                param_count += 1
+                if param.grad is not None:
+                    param_norm = param.grad.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                    grad_count += 1
+                    print(f"    {name:40s}: grad_norm = {param_norm.item():.6f}")
+            
+            if grad_count == 0:
+                print("    ⚠ WARNING: No gradients found!")
+                print("    This usually means:")
+                print("    1. Model hasn't been trained yet")
+                print("    2. Gradients were cleared after optimizer.step()")
+                print("    3. Model is in eval() mode")
+                print("\n    Run training step first, then check gradients immediately")
+            else:
+                total_norm = total_norm ** 0.5
+                print(f"\n  Total gradient norm: {total_norm:.6f}")
+                print(f"  Parameters with gradients: {grad_count}/{param_count}")
+
+# ============================================================
+# SECTION 5: ROTATIONAL FRACTAL BRAIN (NEW)
+# ============================================================
+
+import math
+from typing import Dict, List, Optional
+
+
+class RotationalRoom(nn.Module):
+    """
+    A single "room" in the skyscraper that can rotate.
+    
+    Each RotationalRoom is a NanoFractalNode with added rotation capabilities:
+    - Maintains a 3x3 rotation matrix for spatial orientation
+    - Can rotate around X, Y, Z axes
+    - Tracks its position and orientation in the skyscraper
+    
+    Rotation adds new processing dimensions:
+    - Same input, different rotation = different processing perspective
+    - Enables "viewing" data from multiple angles
+    """
+    
+    def __init__(self, coords, room_id=0):
+        super().__init__()
+        self.coords = coords  # (x, y, z) position in skyscraper
+        self.room_id = room_id
+        self.floor_level = coords[2] if len(coords) > 2 else 0  # z-coordinate = floor number
+        
+        # The 8-Channel Processing Logic (same as NanoFractalNode)
+        self.process = nn.Sequential(
+            nn.Linear(INPUT_DIM, HIDDEN_DIM),
+            nn.SiLU(),
+            nn.Linear(HIDDEN_DIM, INPUT_DIM)
+        )
+        
+        # Rotation matrix (3x3, initialized to identity)
+        # This represents the room's current orientation
+        self.register_buffer('rotation_matrix', torch.eye(3))
+        
+        # Rotation history for tracking orientation changes
+        self.rotation_history = []
+        
+        # Room-specific rotation parameters (learnable)
+        self.rotation_weights = nn.Parameter(torch.randn(3) * 0.1)
+        
+    def rotate(self, axis: str, angle: float):
+        """
+        Rotate the room around a specific axis.
+        
+        Args:
+            axis: 'x', 'y', or 'z'
+            angle: Rotation angle in radians
+        """
+        # Create rotation matrix
+        if axis == 'x':
+            R = torch.tensor([
+                [1, 0, 0],
+                [0, math.cos(angle), -math.sin(angle)],
+                [0, math.sin(angle), math.cos(angle)]
+            ], dtype=torch.float32)
+        elif axis == 'y':
+            R = torch.tensor([
+                [math.cos(angle), 0, math.sin(angle)],
+                [0, 1, 0],
+                [-math.sin(angle), 0, math.cos(angle)]
+            ], dtype=torch.float32)
+        elif axis == 'z':
+            R = torch.tensor([
+                [math.cos(angle), -math.sin(angle), 0],
+                [math.sin(angle), math.cos(angle), 0],
+                [0, 0, 1]
+            ], dtype=torch.float32)
+        else:
+            raise ValueError(f"Unknown axis: {axis}")
+        
+        # Apply rotation
+        self.rotation_matrix = torch.matmul(R, self.rotation_matrix)
+        
+        # Record rotation
+        self.rotation_history.append({
+            'axis': axis,
+            'angle': angle,
+            'matrix': self.rotation_matrix.clone()
+        })
+        
+    def get_rotation_matrix(self) -> torch.Tensor:
+        """Return current rotation matrix"""
+        return self.rotation_matrix
+        
+    def get_rotation_info(self) -> Dict:
+        """Return current orientation state"""
+        return {
+            'room_id': self.room_id,
+            'position': self.coords,
+            'floor_level': self.floor_level,
+            'rotation_matrix': self.rotation_matrix.detach().cpu().numpy().tolist(),
+            'rotation_euler': self._matrix_to_euler(self.rotation_matrix).tolist(),
+            'num_rotations': len(self.rotation_history)
+        }
+        
+    def _matrix_to_euler(self, R: torch.Tensor) -> torch.Tensor:
+        """Convert rotation matrix to Euler angles (XYZ order)"""
+        sy = torch.sqrt(R[0, 0] * R[0, 0] + R[1, 0] * R[1, 0])
+        singular = sy < 1e-6
+        
+        if not singular:
+            x = torch.atan2(R[2, 1], R[2, 2])
+            y = torch.atan2(-R[2, 0], sy)
+            z = torch.atan2(R[1, 0], R[0, 0])
+        else:
+            x = torch.atan2(-R[1, 2], R[1, 1])
+            y = torch.atan2(-R[2, 0], sy)
+            z = torch.tensor(0.0, device=R.device)
+            
+        return torch.stack([x, y, z])
+        
+    def forward(self, x, apply_rotation=False):
+        """
+        Process data through this room.
+        
+        Args:
+            x: Input tensor [batch, INPUT_DIM]
+            apply_rotation: If True, rotate input based on room orientation
+        """
+        if apply_rotation:
+            rot_factor = torch.tanh(self.rotation_weights.sum())
+            x = x * (1 + rot_factor * 0.1)
+            
+        return self.process(x)
+
+
+class SkyscraperFloor(nn.Module):
+    """
+    A single floor in the skyscraper containing multiple RotationalRooms.
+    
+    Each floor can rotate as a unit, moving all rooms around like a Rubik's cube layer.
+    This enables position permutations for different processing patterns.
+    """
+    
+    def __init__(self, level: int, rooms: List[RotationalRoom]):
+        super().__init__()
+        self.level = level  # Floor level (z-coordinate)
+        self.rooms = nn.ModuleList(rooms)
+        self.num_rooms = len(rooms)
+        
+        # Position mapping for Rubik's rotation
+        self.register_buffer('position_map', torch.arange(self.num_rooms))
+        
+        # Floor-level rotation (affects all rooms)
+        self.floor_rotation = 0  # 0, 90, 180, 270 degrees
+        
+    def get_rooms_at_positions(self, positions: List[int]) -> List[RotationalRoom]:
+        """Get rooms at specific grid positions"""
+        rooms = []
+        for pos in positions:
+            idx = (self.position_map == pos).nonzero(as_tuple=True)[0]
+            if len(idx) > 0:
+                rooms.append(self.rooms[idx[0]])
+        return rooms
+    
+    def rotate_floor(self, axis: str = 'z', degrees: float = 90):
+        """
+        Rotate the entire floor around an axis.
+        
+        Args:
+            axis: 'x', 'y', or 'z' (z rotates in-plane)
+            degrees: Rotation angle in degrees
+        """
+        angle = math.radians(degrees)
+        
+        # Rotate each room
+        for room in self.rooms:
+            room.rotate(axis, angle)
+            
+        # Update floor rotation state
+        self.floor_rotation = (self.floor_rotation + degrees) % 360
+        
+    def rubik_rotate(self, direction: str = 'clockwise'):
+        """
+        Perform a Rubik's cube style rotation of room positions.
+        
+        This cycles the positions of rooms on this floor:
+        - clockwise: (0,1,2,3) -> (3,0,1,2)
+        - counter_clockwise: (0,1,2,3) -> (1,2,3,0)
+        
+        Args:
+            direction: 'clockwise' or 'counter_clockwise'
+        """
+        n = self.num_rooms
+        if n < 2:
+            return
+            
+        if direction == 'clockwise':
+            new_map = torch.roll(self.position_map, shifts=1, dims=0)
+        else:
+            new_map = torch.roll(self.position_map, shifts=-1, dims=0)
+            
+        self.position_map = new_map
+        
+    def get_floor_info(self) -> Dict:
+        """Return floor state information"""
+        return {
+            'level': self.level,
+            'num_rooms': self.num_rooms,
+            'floor_rotation': self.floor_rotation,
+            'room_positions': self.position_map.cpu().numpy().tolist(),
+            'rooms': [room.get_rotation_info() for room in self.rooms]
+        }
+        
+    def forward(self, x, apply_rotation=False):
+        """Process data through all rooms on this floor."""
+        outputs = []
+        for room in self.rooms:
+            out = room(x, apply_rotation=apply_rotation)
+            outputs.append(out)
+            
+        stacked = torch.stack(outputs, dim=1)  # [batch, num_rooms, INPUT_DIM]
+        return torch.mean(stacked, dim=1)  # [batch, INPUT_DIM]
+
+
+class RubiksRotationEngine(nn.Module):
+    """
+    Engine that controls rotation of skyscraper layers.
+    
+    This is the "brain" of the rotation system, managing:
+    - Floor rotations (Rubik's cube style)
+    - Room rotations (individual orientation)
+    - Layer cycling (swapping floors)
+    - Rotation state management
+    """
+    
+    def __init__(self, num_floors: int = 3):
+        super().__init__()
+        self.num_floors = num_floors
+        self.floors = nn.ModuleList()
+        
+        # Rotation state tracking
+        self.rotation_state = {
+            'layer_rotations': [0] * num_floors,
+            'axis_orientations': {'x': 0, 'y': 0, 'z': 0},
+            'total_operations': 0
+        }
+        
+    def add_floor(self, floor: SkyscraperFloor):
+        """Add a floor to the engine"""
+        self.floors.append(floor)
+        
+    def rotate_layer(self, layer_idx: int, axis: str = 'z', degrees: float = 90):
+        """
+        Rotate a specific layer of the skyscraper.
+        
+        Args:
+            layer_idx: Floor index (0 = bottom, num_floors-1 = top)
+            axis: Rotation axis ('x', 'y', 'z')
+            degrees: Rotation angle
+        """
+        if 0 <= layer_idx < len(self.floors):
+            self.floors[layer_idx].rotate_floor(axis, degrees)
+            self.rotation_state['layer_rotations'][layer_idx] += degrees
+            self.rotation_state['total_operations'] += 1
+            
+    def rotate_all_layers(self, axis: str = 'z', degrees: float = 90):
+        """Rotate all layers simultaneously"""
+        for i in range(len(self.floors)):
+            self.rotate_layer(i, axis, degrees)
+        self.rotation_state['axis_orientations'][axis] += degrees
+        
+    def cycle_layers(self, direction: str = 'up'):
+        """
+        Cycle the layers (move floors up/down like a Rubik's cube column).
+        
+        Args:
+            direction: 'up' or 'down'
+        """
+        floors_list = list(self.floors)
+        
+        if direction == 'up':
+            new_order = [floors_list[-1]] + floors_list[:-1]
+        else:
+            new_order = floors_list[1:] + [floors_list[0]]
+            
+        self.floors = nn.ModuleList(new_order)
+        self.rotation_state['total_operations'] += 1
+        
+    def rubik_move(self, face: str, direction: str = 'clockwise'):
+        """
+        Perform a Rubik's cube style move on a specific face.
+        
+        Args:
+            face: 'front', 'back', 'left', 'right', 'top', 'bottom'
+            direction: 'clockwise' or 'counter_clockwise'
+        """
+        axis_map = {
+            'front': 'y', 'back': 'y',
+            'left': 'x', 'right': 'x',
+            'top': 'z', 'bottom': 'z'
+        }
+        
+        degrees_map = {'clockwise': 90, 'counter_clockwise': -90}
+        
+        axis = axis_map.get(face, 'z')
+        degrees = degrees_map.get(direction, 90)
+        
+        if face in ['top', 'bottom']:
+            self.rotate_all_layers(axis, degrees)
+        else:
+            mid = len(self.floors) // 2
+            if face == 'front':
+                floors_to_rotate = self.floors[:mid]
+            else:
+                floors_to_rotate = self.floors[mid:]
+                
+            for floor in floors_to_rotate:
+                floor.rotate_floor(axis, degrees)
+                
+        self.rotation_state['total_operations'] += 1
+        
+    def get_rotation_state(self) -> Dict:
+        """Return current rotation state"""
+        return {
+            'layer_rotations': self.rotation_state['layer_rotations'].copy(),
+            'axis_orientations': self.rotation_state['axis_orientations'].copy(),
+            'total_operations': self.rotation_state['total_operations'],
+            'floor_states': [floor.get_floor_info() for floor in self.floors]
+        }
+        
+    def set_rotation_state(self, state: Dict):
+        """Restore rotation state"""
+        if 'layer_rotations' in state:
+            self.rotation_state['layer_rotations'] = state['layer_rotations'].copy()
+        if 'axis_orientations' in state:
+            self.rotation_state['axis_orientations'] = state['axis_orientations'].copy()
+        if 'total_operations' in state:
+            self.rotation_state['total_operations'] = state['total_operations']
+            
+    def reset_rotations(self):
+        """Reset all rotations to identity"""
+        for floor in self.floors:
+            for room in floor.rooms:
+                room.rotation_matrix = torch.eye(3, device=room.rotation_matrix.device)
+            floor.floor_rotation = 0
+            floor.position_map = torch.arange(floor.num_rooms)
+            
+        self.rotation_state = {
+            'layer_rotations': [0] * self.num_floors,
+            'axis_orientations': {'x': 0, 'y': 0, 'z': 0},
+            'total_operations': 0
+        }
+        
+    def forward(self, x, floor_idx: int = None):
+        """Process data through the rotation engine."""
+        if floor_idx is not None:
+            return self.floors[floor_idx](x)
+        else:
+            outputs = []
+            for floor in self.floors:
+                out = floor(x)
+                outputs.append(out)
+                
+            stacked = torch.stack(outputs, dim=1)
+            return torch.mean(stacked, dim=1)
+
+
+class RotationAwareRouter(nn.Module):
+    """
+    Quantum router that considers room rotation states.
+    
+    Unlike the basic QuantumRouter, this router takes into account:
+    - Room orientation (which affects processing)
+    - Floor rotation state
+    - Position permutations from Rubik's moves
+    
+    This enables rotation-based prompt engineering:
+    - Different rotations = different processing paths
+    - Consistent rotations = consistent behavior
+    """
+    
+    def __init__(self, num_rooms: int, num_floors: int = 3):
+        super().__init__()
+        self.num_rooms = num_rooms
+        self.num_floors = num_floors
+        
+        # Quantum circuit for routing (same as QuantumRouter)
+        qc = QuantumCircuit(NUM_QUBITS)
+        self.inputs = [Parameter(f'x{i}') for i in range(NUM_QUBITS)]
+        self.weights = [Parameter(f'w{i}') for i in range(NUM_QUBITS)]
+        
+        # Encoding
+        for i in range(NUM_QUBITS):
+            qc.rx(self.inputs[i], i)
+            
+        # Entanglement
+        for i in range(NUM_QUBITS-1):
+            qc.cx(i, i+1)
+        qc.cx(NUM_QUBITS-1, 0)
+        
+        # Variational
+        for i in range(NUM_QUBITS):
+            qc.ry(self.weights[i], i)
+            
+        qnn = EstimatorQNN(circuit=qc, input_params=self.inputs, weight_params=self.weights)
+        self.q_layer = TorchConnector(qnn)
+        
+        # Map to room weights
+        self.adapter = nn.Linear(1, num_rooms)
+        self.softmax = nn.Softmax(dim=-1)
+        
+        # Rotation-aware adapter (modifies routing based on rotation)
+        self.rotation_adapter = nn.Linear(num_rooms, num_rooms)
+        
+    def forward(self, x, rotation_state: Dict = None):
+        """Route data considering rotation state."""
+        # Standard quantum routing
+        x_reduced = torch.mean(x, dim=1, keepdim=True).repeat(1, NUM_QUBITS)
+        q_out = self.q_layer(x_reduced)
+        
+        # Handle quantum output shape
+        q_out_flat = q_out.reshape(q_out.shape[0], -1)
+        q_out_scalar = q_out_flat.mean(dim=-1, keepdim=True)
+        if q_out_scalar.shape[-1] != 1:
+            q_out_scalar = q_out_scalar.mean(dim=-1, keepdim=True)
+        
+        base_weights = self.softmax(self.adapter(q_out_scalar))
+        
+        # Apply rotation-based modifications
+        if rotation_state is not None:
+            rot_modulation = self._compute_rotation_modulation(rotation_state)
+            modulated_weights = base_weights * (1 + rot_modulation)
+            modulated_weights = modulated_weights / modulated_weights.sum(dim=-1, keepdim=True)
+            return modulated_weights
+        else:
+            return base_weights
+            
+    def _compute_rotation_modulation(self, rotation_state: Dict) -> torch.Tensor:
+        """Compute weight modulation based on rotation state"""
+        total_rot = sum(abs(r) for r in rotation_state.get('layer_rotations', []))
+        modulation_factor = torch.sigmoid(torch.tensor(total_rot / 360))
+        room_modulation = torch.randn(self.num_rooms) * modulation_factor * 0.5
+        return torch.abs(room_modulation)
+
+
+class RotationalFractalBrain(nn.Module):
+    """
+    The main Rotational Fractal Brain - A Skyscraper with Rotatable Rooms.
+    
+    This replaces TitanMengerBrain with an enhanced architecture:
+    - Skyscraper structure with multiple floors
+    - Each floor has multiple RotationalRooms
+    - Rooms can rotate individually
+    - Floors can rotate like Rubik's cube
+    - Quantum routing considers rotation state
+    
+    Benefits:
+    - More layers = easier prompt understanding (semantic organization)
+    - Rotation patterns encode task type and processing mode
+    - Organized prompt engineering (rotation = semantic orientation)
+    
+    Usage:
+        brain = RotationalFractalBrain()
+        
+        # Auto-rotate based on prompt
+        brain.rotate_prompt("Analyze this code structure")
+        
+        # Manual rotation
+        brain.engine.rotate_layer(0, 'z', 90)
+        
+        # Process data
+        output = brain(input_tensor)
+    """
+    
+    def __init__(self, 
+                 num_floors: int = 3,
+                 rooms_per_floor: int = 8,
+                 enable_quantum: bool = True):
+        super().__init__()
+        
+        self.num_floors = num_floors
+        self.rooms_per_floor = rooms_per_floor
+        self.enable_quantum = enable_quantum
+        
+        print(f"[INIT] Constructing Rotational Fractal Skyscraper...")
+        print(f"       Floors: {num_floors}, Rooms per floor: {rooms_per_floor}")
+        
+        # Build the skyscraper structure
+        self.skyscraper = self._build_skyscraper()
+        
+        # Rotation engine
+        self.engine = RubiksRotationEngine(num_floors)
+        for floor in self.skyscraper:
+            self.engine.add_floor(floor)
+            
+        print(f"[INIT] Skyscraper Complete. Total Rooms: {len(self.skyscraper) * rooms_per_floor}")
+        
+        # Rotation-aware router
+        total_rooms = num_floors * rooms_per_floor
+        self.router = RotationAwareRouter(total_rooms, num_floors)
+        
+        # Output processor
+        self.output_gate = nn.Linear(INPUT_DIM, INPUT_DIM)
+        
+        # Prompt-based rotation patterns (learnable)
+        self.prompt_patterns = nn.Parameter(torch.randn(10, 3) * 0.1)
+        
+        print("[INIT] Rotational Fractal Brain ready!")
+        
+    def _build_skyscraper(self) -> nn.ModuleList:
+        """Build the skyscraper with floors and rooms."""
+        floors = nn.ModuleList()
+        
+        for floor_level in range(self.num_floors):
+            rooms = []
+            
+            # Create rooms on this floor (arranged in grid)
+            grid_size = int(math.ceil(math.sqrt(self.rooms_per_floor)))
+            
+            for room_idx in range(self.rooms_per_floor):
+                x = (room_idx % grid_size) - grid_size // 2
+                y = (room_idx // grid_size) - grid_size // 2
+                z = floor_level - self.num_floors // 2
+                
+                coords = (x, y, z)
+                room = RotationalRoom(coords, room_id=room_idx)
+                rooms.append(room)
+                
+            floor = SkyscraperFloor(floor_level, rooms)
+            floors.append(floor)
+            
+        return floors
+        
+    def rotate_prompt(self, prompt: str):
+        """
+        Automatically rotate the brain based on prompt characteristics.
+        
+        Different prompts trigger different rotation patterns:
+        - "Analyze", "Review" -> Z-axis rotation (in-plane, systematic)
+        - "Create", "Build", "Make" -> X-axis rotation (side view, creative)
+        - "Find", "Search", "Look" -> Y-axis rotation (front view, focused)
+        - "Transform", "Convert", "Change" -> Combined rotations
+        - "Explain", "Describe" -> Gentle rotation (educational mode)
+        
+        Args:
+            prompt: The input prompt string
+        """
+        prompt_lower = prompt.lower()
+        
+        if any(word in prompt_lower for word in ['analyze', 'review', 'check']):
+            self.engine.rotate_all_layers('z', 90)
+            pattern = 0
+        elif any(word in prompt_lower for word in ['create', 'build', 'make', 'generate']):
+            self.engine.rotate_all_layers('x', 90)
+            pattern = 1
+        elif any(word in prompt_lower for word in ['find', 'search', 'look', 'query']):
+            self.engine.rotate_all_layers('y', 90)
+            pattern = 2
+        elif any(word in prompt_lower for word in ['transform', 'convert', 'change']):
+            self.engine.rotate_all_layers('x', 45)
+            self.engine.rotate_all_layers('y', 45)
+            pattern = 3
+        elif any(word in prompt_lower for word in ['explain', 'describe', 'teach']):
+            self.engine.rotate_all_layers('z', 30)
+            pattern = 4
+        else:
+            axis_idx = torch.randint(0, 3, (1,)).item()
+            axes = ['x', 'y', 'z']
+            self.engine.rotate_all_layers(axes[axis_idx], 45)
+            pattern = 5 + axis_idx
+            
+        with torch.no_grad():
+            self.prompt_patterns[pattern % 10] += torch.randn(3) * 0.01
+            
+    def set_rotation_state(self, state: Dict):
+        """Set brain to a specific rotation state"""
+        self.engine.set_rotation_state(state)
+        
+    def get_rotation_state(self) -> Dict:
+        """Get current rotation state"""
+        return self.engine.get_rotation_state()
+        
+    def reset_rotations(self):
+        """Reset all rotations to identity"""
+        self.engine.reset_rotations()
+        
+    def forward(self, x, apply_rotations: bool = True):
+        """Process data through the rotational fractal brain."""
+        rotation_state = self.engine.get_rotation_state() if apply_rotations else None
+        route_weights = self.router(x, rotation_state)
+        
+        total_output = torch.zeros_like(x)
+        
+        room_idx = 0
+        for floor_idx, floor in enumerate(self.skyscraper):
+            floor_weight = route_weights[:, floor_idx].unsqueeze(1) if self.num_floors > 1 else 1.0
+            
+            for room in floor.rooms:
+                room_weight = route_weights[:, room_idx].unsqueeze(1)
+                room_out = room(x, apply_rotation=apply_rotations)
+                total_output += room_out * room_weight * floor_weight
+                room_idx += 1
+                
+        return self.output_gate(total_output)
+
+
+class RotationalTrainer:
+    """
+    Trainer for the Rotational Fractal Brain with rotation-aware training.
+    
+    Features:
+    - Rotation regularization (encourage meaningful rotations)
+    - Pattern learning (link prompts to rotation patterns)
+    - Rotation stability (converge to stable orientations)
+    """
+    
+    def __init__(self, model, learning_rate=0.001):
+        self.model = model
+        for param in model.parameters():
+            param.requires_grad = True
+        self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        self.loss_fn = nn.MSELoss()
+        self.loss_history = []
+        self.rotation_loss_weight = 0.01
+        
+    def train_step(self, input_data, target_data, prompt: str = None):
+        """Single training step with rotation handling"""
+        self.model.train()
+        self.optimizer.zero_grad()
+        
+        if prompt is not None:
+            self.model.rotate_prompt(prompt)
+            
+        output = self.model(input_data)
+        
+        main_loss = self.loss_fn(output, target_data)
+        rotation_state = self.model.get_rotation_state()
+        rot_penalty = self._compute_rotation_penalty(rotation_state)
+        
+        total_loss = main_loss + self.rotation_loss_weight * rot_penalty
+        
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+        self.optimizer.step()
+        
+        self.loss_history.append(total_loss.item())
+        
+        return total_loss.item(), output
+        
+    def _compute_rotation_penalty(self, rotation_state: Dict) -> float:
+        """Compute penalty for excessive rotations"""
+        total_rot = sum(abs(r) for r in rotation_state['layer_rotations'])
+        return torch.tensor(total_rot / 360.0) ** 2
+        
+    def get_status(self) -> Dict:
+        """Get training status"""
+        return {
+            'current_loss': self.loss_history[-1] if self.loss_history else 0,
+            'avg_loss': sum(self.loss_history) / len(self.loss_history) if self.loss_history else 0,
+            'rotation_state': self.model.get_rotation_state()
+        }
+
+
+def rotational_physics_logger(input_vec, routing_weights, rotation_engine, brain):
+    """Log neural activity for the rotational fractal brain."""
+    print("\n--- [ROTATIONAL TITAN NEURAL EVENT LOG] ---")
+    print(f"INPUT TENSOR:  |Ψ_in⟩ (8-Channel Voxel)")
+    
+    best_floor = torch.argmax(routing_weights.sum(dim=0)).item()
+    print(f"ROUTER STATE:  Active Floor: {best_floor}")
+    
+    rot_state = rotation_engine.get_rotation_state()
+    print(f"ROTATION STATE:")
+    print(f"  Layer Rotations: {rot_state['layer_rotations']}")
+    print(f"  Total Operations: {rot_state['total_operations']}")
+    
+    room_infos = []
+    for floor in brain.skyscraper:
+        for room in floor.rooms:
+            room_infos.append(room.get_rotation_info())
+            
+    best_room = room_infos[torch.argmax(routing_weights.sum(dim=0)).item()]
+    print(f"  Best Room: ID={best_room['room_id']} at floor={best_room['floor_level']}")
+    
+    print(f"TOPOLOGY:      Rotational_Skyscraper[{len(brain.skyscraper)} floors]")
+    print("--------------------------------")
+
+
+# --- EXECUTION ---
+if __name__ == "__main__":
+    # Initialize the Titan
+    titan = TitanMengerBrain()
+    
+    # Simulate a Data Stream (Batch of 1, 8 Channels)
+    # [RGB, IR, UV, Normals...]
+    data_packet = torch.randn(1, INPUT_DIM)
+    
+    # Run the Brain
+    output = titan(data_packet)
+    
+    # Extract routing weights for the log
+    weights = titan.router(data_packet)
+    
+    # Generate the Physics Report
+    physics_logger(data_packet, weights, titan.node_coords)
+    
+    # Also demonstrate the Rotational Fractal Brain
+    print("\n" + "="*50)
+    print("ROTATIONAL FRACTAL BRAIN DEMO")
+    print("="*50)
+    
+    rotational_brain = RotationalFractalBrain(num_floors=3, rooms_per_floor=8)
+    rotational_brain.eval()
+    
+    # Test rotation based on prompt
+    test_prompts = [
+        "Analyze this code structure",
+        "Create a new function",
+        "Find the bug in this logic",
+        "Transform the data format",
+        "Explain how this works"
+    ]
+    
+    for prompt in test_prompts:
+        print(f"\n[PROMPT] '{prompt}'")
+        rotational_brain.rotate_prompt(prompt)
+        rot_state = rotational_brain.get_rotation_state()
+        print(f"  Layer Rotations: {rot_state['layer_rotations']}")
+        
+        # Process data
+        with torch.no_grad():
+            output = rotational_brain(data_packet)
+        print(f"  Output norm: {output.norm().item():.4f}")
