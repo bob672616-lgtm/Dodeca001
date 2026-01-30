@@ -1,0 +1,362 @@
+import torch
+import torch.nn as nn
+import numpy as np
+import sys
+import time
+
+from typing import Dict, List, Tuple, Optional 
+from collections import OrderedDict
+
+# --- QUANTUM IMPORTS ---
+from qiskit import QuantumCircuit
+from qiskit.circuit import Parameter
+from qiskit_aer import AerSimulator
+from qiskit_machine_learning.connectors import TorchConnector
+from qiskit_machine_learning.neural_networks import EstimatorQNN
+
+# --- CONFIGURATION ---
+PACKET_SIZE = 512    # Initial size of text embedding
+FOLDS = 3            # How many times we compress the fractal
+N_QUBITS = 4         # The Quantum Core
+
+# --- 1. THE FRACTAL ENCODER (The Folder) ---
+class FractalEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        # Simple embedding to turn text into numbers
+        self.char_embed = nn.Embedding(256, PACKET_SIZE)
+
+    def fold(self, x):
+        """
+        Recursive Fractal Compression.
+        We split the tensor and fold it over itself.
+        This increases density (Meaning) while reducing size (Dimensions).
+        """
+        current_dim = x.shape[-1]
+        
+        # Base case: If we match the Qubit count, stop.
+        if current_dim <= N_QUBITS:
+            return x[:, :N_QUBITS]
+
+        # The Fold: Split, Add, Tanh (Non-linearity)
+        # This mimics the Menger Sponge removing volume but keeping structure.
+        half = current_dim // 2
+        left = x[:, :half]
+        right = x[:, half:2*half]
+        
+        # Combine halves (Interference)
+        folded = torch.tanh(left + right)
+        
+        # Recurse
+        return self.fold(folded)
+
+    def forward(self, text):
+        # 1. Convert to ASCII tensor
+        ids = torch.tensor([ord(c) for c in text], dtype=torch.long)
+        # 2. Embed to high dimension
+        vectors = self.char_embed(ids)
+        # 3. Average to get one vector for the sentence
+        sentence_vec = torch.mean(vectors, dim=0, keepdim=True)
+        # 4. Perform Fractal Folding
+        packet = self.fold(sentence_vec)
+        return packet
+
+# --- 2. THE QUANTUM RECEIVER (The Core) ---
+class QuantumCore(nn.Module):
+    def __init__(self):
+        super().__init__()
+        
+        # Build Circuit
+        qc = QuantumCircuit(N_QUBITS)
+        self.inputs = [Parameter(f'x{i}') for i in range(N_QUBITS)]
+        self.weights = [Parameter(f'w{i}') for i in range(N_QUBITS)]
+        
+        # Encode Packet Data
+        for i in range(N_QUBITS):
+            qc.rx(self.inputs[i], i)
+            
+        # Entangle
+        for i in range(N_QUBITS-1):
+            qc.cx(i, i+1)
+        qc.cx(N_QUBITS-1, 0)
+        
+        # Process
+        for i in range(N_QUBITS):
+            qc.ry(self.weights[i], i)
+            
+        # Bridge
+        qnn = EstimatorQNN(circuit=qc, input_params=self.inputs, weight_params=self.weights)
+        self.q_layer = TorchConnector(qnn)
+        
+        # Output Decoder (Unpack the thought)
+        self.decoder = nn.Linear(N_QUBITS, 64)
+
+    def forward(self, packet):
+        q_state = self.q_layer(packet)
+        
+        # Handle quantum output shape: EstimatorQNN may return various shapes
+        # We need to adapt to the decoder's expected input shape (batch, N_QUBITS)
+        if q_state.shape[-1] != N_QUBITS:
+            # Flatten and resize to match decoder expectations
+            q_flat = q_state.reshape(q_state.shape[0], -1)
+            # Project to N_QUBITS if needed
+            if q_flat.shape[-1] != N_QUBITS:
+                # Use a simple resize operation
+                q_state = q_flat[:, :N_QUBITS] if q_flat.shape[-1] > N_QUBITS else \
+                         torch.nn.functional.pad(q_flat, (0, N_QUBITS - q_flat.shape[-1]))
+            else:
+                q_state = q_flat
+        
+        output = self.decoder(q_state)
+        return output
+
+# --- 3. THE DRIVER (System Controller) ---
+class FractalDriver:
+    def __init__(self):
+        self.encoder = FractalEncoder()
+        self.core = QuantumCore()
+        
+    def inject(self, input_text):
+        print(f"\n[DRIVER] Received Input: '{input_text}'")
+        
+        # Step A: Fractal Compression
+        print(f"[DRIVER] Folding Data {FOLDS} times (Menger Protocol)...")
+        packet = self.encoder(input_text)
+        
+        print(f"[PACKET] Dimensionality reduced: {PACKET_SIZE} -> {N_QUBITS}")
+        print(f"[PACKET] Vector State: {packet.detach().numpy()}")
+        
+        # Step B: Quantum Injection
+        print("[DRIVER] Injecting into Quantum Core...")
+        result = self.core(packet)
+        
+        # Step C: Interpretation
+        # We take the output vector and generate a "System Hash"
+        # This represents the AI's internal state change
+        state_hash = torch.sum(result).item()
+        
+        return state_hash
+
+# --- 4. ROTATIONAL FRACTAL DRIVER (NEW) ---
+# Enhanced driver that uses the RotationalFractalBrain
+
+try:
+    from Titan_Quantum_Brainv2_classes import (
+        RotationalFractalBrain, 
+        RotationalTrainer,
+        INPUT_DIM
+    )
+    ROTATIONAL_AVAILABLE = True
+except ImportError:
+    ROTATIONAL_AVAILABLE = False
+    print("[WARNING] Rotational classes not available. Using basic driver.")
+
+class RotationalFractalDriver:
+    """
+    Enhanced FractalDriver with Rotational Brain capabilities.
+    
+    New Features:
+    - Multi-floor skyscraper architecture
+    - Room rotation for different processing perspectives
+    - Rubik's cube floor rotation
+    - Auto-rotation based on prompt keywords
+    - Rotation state tracking
+    """
+    
+    def __init__(self, num_floors: int = 3, rooms_per_floor: int = 8):
+        print("\n[DRIVER] Initializing Rotational Fractal Driver...")
+        
+        if not ROTATIONAL_AVAILABLE:
+            print("[ERROR] Rotational classes not available!")
+            self.brain = None
+            return
+            
+        # Initialize the rotational brain
+        self.brain = RotationalFractalBrain(
+            num_floors=num_floors,
+            rooms_per_floor=rooms_per_floor,
+            enable_quantum=True
+        )
+        self.brain.eval()
+        
+        # Access to rotation engine
+        self.engine = self.brain.engine
+        
+        print("  ✓ Rotational Brain initialized")
+        print("  ✓ Rotation Engine ready")
+        
+    def rotate_prompt(self, prompt: str):
+        """
+        Auto-rotate brain based on prompt keywords.
+        
+        Patterns:
+        - "Analyze", "Review" -> Z-axis rotation (systematic)
+        - "Create", "Build", "Make" -> X-axis rotation (creative)
+        - "Find", "Search", "Look" -> Y-axis rotation (focused)
+        - "Transform", "Convert" -> Combined rotations
+        - "Explain", "Describe" -> Gentle rotation
+        """
+        if self.brain is None:
+            print("[ERROR] Brain not initialized!")
+            return
+            
+        self.brain.rotate_prompt(prompt)
+        rotation_state = self.brain.get_rotation_state()
+        
+        print(f"[ROTATION] Layer Rotations: {rotation_state['layer_rotations']}")
+        print(f"[ROTATION] Total Operations: {rotation_state['total_operations']}")
+        
+        return rotation_state
+        
+    def manual_rotate(self, layer_idx: int, axis: str, degrees: float):
+        """Manually rotate a specific layer"""
+        if self.engine is None:
+            print("[ERROR] Engine not initialized!")
+            return
+            
+        self.engine.rotate_layer(layer_idx, axis, degrees)
+        print(f"[ROTATION] Layer {layer_idx} rotated {axis}-axis by {degrees}°")
+        
+    def rubik_move(self, face: str, direction: str = 'clockwise'):
+        """Perform Rubik's cube style move"""
+        if self.engine is None:
+            print("[ERROR] Engine not initialized!")
+            return
+            
+        self.engine.rubik_move(face, direction)
+        print(f"[RUBIK] {face} face - {direction}")
+        
+    def cycle_layers(self, direction: str = 'up'):
+        """Cycle layers up or down"""
+        if self.engine is None:
+            print("[ERROR] Engine not initialized!")
+            return
+            
+        self.engine.cycle_layers(direction)
+        print(f"[CYCLE] Layers cycled {direction}")
+        
+    def reset_rotations(self):
+        """Reset all rotations to identity"""
+        if self.brain is None:
+            print("[ERROR] Brain not initialized!")
+            return
+            
+        self.brain.reset_rotations()
+        print("[ROTATION] All rotations reset to identity")
+        
+    def get_rotation_state(self) -> Dict:
+        """Get current rotation state"""
+        if self.brain is None:
+            return {}
+        return self.brain.get_rotation_state()
+        
+    def inject(self, input_text: str):
+        """
+        Process input through the rotational brain.
+        
+        Auto-rotates based on prompt keywords.
+        """
+        if self.brain is None:
+            print("[ERROR] Brain not initialized!")
+            return None
+            
+        print(f"\n[DRIVER] Received Input: '{input_text}'")
+        
+        # Auto-rotate based on prompt
+        rotation_state = self.rotate_prompt(input_text)
+        
+        # Create input tensor
+        input_tensor = torch.randn(1, INPUT_DIM)
+        
+        # Process through brain
+        with torch.no_grad():
+            output = self.brain(input_tensor, apply_rotations=True)
+            
+        # Calculate energy state
+        state_hash = torch.sum(output).item()
+        
+        # Get room info
+        total_rooms = sum(floor.num_rooms for floor in self.brain.skyscraper)
+        
+        print(f"\n[PROCESSING]")
+        print(f"  Total Rooms: {total_rooms}")
+        print(f"  Output Norm: {output.norm().item():.4f}")
+        print(f"  State Hash: {state_hash:.4f}")
+        
+        return {
+            'output': output,
+            'state_hash': state_hash,
+            'rotation_state': rotation_state
+        }
+        
+    def get_brain_info(self) -> Dict:
+        """Get information about the brain structure"""
+        if self.brain is None:
+            return {}
+            
+        return {
+            'num_floors': self.brain.num_floors,
+            'rooms_per_floor': self.brain.rooms_per_floor,
+            'total_rooms': sum(floor.num_rooms for floor in self.brain.skyscraper),
+            'rotation_state': self.get_rotation_state()
+        }
+
+# --- EXECUTION ---
+if __name__ == "__main__":
+    print("="*60)
+    print("FRACTAL PACKET DRIVER - ROTATIONAL EDITION")
+    print("="*60)
+    
+    # Choose driver type
+    use_rotational = ROTATIONAL_AVAILABLE
+    
+    if use_rotational:
+        driver = RotationalFractalDriver(num_floors=3, rooms_per_floor=8)
+        print("\n--- ROTATIONAL FRACTAL DRIVER ONLINE ---")
+        print("Mode: Skyscraper with Rotatable Rooms")
+        print("\nRotation Patterns:")
+        print("  'Analyze', 'Review' -> Z-axis (systematic)")
+        print("  'Create', 'Build' -> X-axis (creative)")
+        print("  'Find', 'Search' -> Y-axis (focused)")
+        print("  'Transform' -> Combined rotations")
+        print("  'Explain' -> Gentle rotation")
+    else:
+        driver = FractalDriver()
+        print("\n--- FRACTAL PACKET DRIVER ONLINE ---")
+        print("Mode: Hybrid Text-to-Qubit Folding")
+    
+    while True:
+        user_in = input("\n\033[96m[ALCHEMIST] >> \033[0m")
+        if user_in.lower() == "exit": break
+        
+        if use_rotational and isinstance(driver, RotationalFractalDriver):
+            result = driver.inject(user_in)
+            
+            if result:
+                state_hash = result['state_hash']
+                if state_hash > 0:
+                    status = "CONSTRUCTIVE INTERFERENCE"
+                    col = "\033[92m"
+                else:
+                    status = "DESTRUCTIVE INTERFERENCE"
+                    col = "\033[91m"
+                    
+                print(f"{col}[TITAN] Neural Energy: {state_hash:.4f}")
+                print(f"[TITAN] Status: {status}\033[0m")
+                
+                # Additional rotation info
+                rot = result.get('rotation_state', {})
+                if rot:
+                    print(f"[ROTATION] Total Operations: {rot.get('total_operations', 0)}")
+        else:
+            response_energy = driver.inject(user_in)
+            
+            if response_energy > 0:
+                status = "CONSTRUCTIVE INTERFERENCE (Understanding)"
+                col = "\033[92m"
+            else:
+                status = "DESTRUCTIVE INTERFERENCE (Confusion/Entropy)"
+                col = "\033[91m"
+                
+            print(f"{col}[TITAN] Neural Energy Delta: {response_energy:.4f}")
+            print(f"[TITAN] Status: {status}\033[0m")
